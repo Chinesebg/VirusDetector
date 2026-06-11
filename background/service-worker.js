@@ -1,0 +1,599 @@
+/**
+ * 银狐木马检测 - Service Worker (主协调器)
+ *
+ * 核心职责：
+ * 1. 页面导航监听 → 缓存检查 → 触发分析
+ * 2. 评分汇总 → 即时图标切换 + 警告弹窗 + 高危页面注入
+ * 3. 下载监听 → 压缩包检测 → 取消下载 → 重新评分
+ * 4. 消息通信 → popup/ content script ↔ background
+ * 5. 缓存管理
+ */
+
+import { ScoringEngine } from './scoring-engine.js';
+import { DomainDatabase } from './domain-database.js';
+import { CacheManager } from './cache-manager.js';
+import { UrlUtils } from '../utils/url-utils.js';
+import {
+  SCORE_THRESHOLD, RISK_LEVEL, MSG_TYPES,
+  STORAGE_KEYS, CACHE_TTL
+} from '../utils/constants.js';
+
+// ==================== 状态管理 ====================
+
+function createTabState() {
+  return {
+    url: '', domain: '', score: 0, riskLevel: RISK_LEVEL.SAFE,
+    isAnalyzed: false, correctUrl: null, officialName: null,
+    ruleResults: {
+      rule1: { score: 0, triggered: false, detailCN: '待检测' },
+      rule2: { score: 0, triggered: false, detailCN: '待检测' },
+      rule3: { score: 0, triggered: false, detailCN: '待检测' },
+      rule4: { score: 0, triggered: false, detailCN: '待检测' },
+      rule5: { score: 0, triggered: false, detailCN: '待检测' }
+    },
+    pageText: '', icpStrings: [], pageMetrics: null, linkMetrics: null,
+    downloadState: { hasDownloadedArchive: false, archiveFileName: null },
+    lastAnalyzed: 0
+  };
+}
+
+async function loadTabState(tabId) {
+  try {
+    const key = STORAGE_KEYS.TAB_STATE_PREFIX + tabId;
+    const r = await chrome.storage.local.get(key);
+    return r[key] || createTabState();
+  } catch (e) { return createTabState(); }
+}
+
+async function saveTabState(tabId, s) {
+  try {
+    await chrome.storage.local.set({ [STORAGE_KEYS.TAB_STATE_PREFIX + tabId]: s });
+  } catch (e) { /* ignore */ }
+}
+
+async function clearTabState(tabId) {
+  try {
+    await chrome.storage.local.remove(STORAGE_KEYS.TAB_STATE_PREFIX + tabId);
+  } catch (e) { /* ignore */ }
+}
+
+// ==================== 图标更新 ====================
+
+function setIconRed(tabId) {
+  chrome.action.setIcon({ tabId, path: {
+    16: 'icons/icon16_red.png', 32: 'icons/icon32_red.png',
+    48: 'icons/icon48_red.png', 128: 'icons/icon128_red.png'
+  }}).catch(() => {});
+  chrome.action.setBadgeText({ tabId, text: '!' }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color: '#F44336' }).catch(() => {});
+}
+
+function setIconGreen(tabId, score) {
+  chrome.action.setIcon({ tabId, path: {
+    16: 'icons/icon16.png', 32: 'icons/icon32.png',
+    48: 'icons/icon48.png', 128: 'icons/icon128.png'
+  }}).catch(() => {});
+  chrome.action.setBadgeText({ tabId, text: String(score || 0) }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color: '#4CAF50' }).catch(() => {});
+}
+
+function resetIcon(tabId) {
+  chrome.action.setIcon({ tabId, path: {
+    16: 'icons/icon16.png', 32: 'icons/icon32.png',
+    48: 'icons/icon48.png', 128: 'icons/icon128.png'
+  }}).catch(() => {});
+  chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+}
+
+// ==================== 高危响应流程 ====================
+
+// 去重：每个标签页的警告冷却期（5秒内不重复弹窗）
+const _warningCooldown = new Map();
+const WARNING_COOLDOWN_MS = 5000;
+
+/**
+ * 触发高危响应：
+ * 1. 图标变红（总是执行）
+ * 2. 注入下载拦截脚本（仅首次）
+ * 3. 弹出系统通知（5秒冷却）
+ * 4. 创建警告窗口（5秒冷却，同域名不重复）
+ */
+async function triggerWarningFlow(tabId, tabState) {
+  const domain = tabState.domain;
+  const score = tabState.score;
+  const correctUrl = tabState.correctUrl;
+  const now = Date.now();
+
+  // 1. 图标即时变红（总是执行）
+  setIconRed(tabId);
+
+  // 2. 注入下载拦截脚本（仅首次，避免重复注入）
+  await injectDownloadBlocker(tabId);
+
+  // 去重检查：同标签页冷却期内跳过通知和弹窗
+  const lastTime = _warningCooldown.get(tabId) || 0;
+  if (now - lastTime < WARNING_COOLDOWN_MS) {
+    console.log('[ServiceWorker] ⚠️ 冷却期内，跳过重复弹窗:', domain);
+    return;
+  }
+  _warningCooldown.set(tabId, now);
+
+  // 3. 桌面通知
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/icon128_red.png',
+    title: '⚠️ 银狐木马检测 - 风险警告',
+    message: `检测到疑似钓鱼网站: ${domain}\n风险评分: ${score}分${correctUrl ? '\n正确官网: ' + correctUrl : ''}`,
+    priority: 2,
+    buttons: correctUrl ? [{ title: '✅ 前往官网' }] : [],
+    requireInteraction: true
+  }).catch(() => {});
+
+  // 4. 创建警告窗口（同域名去重）
+  openWarningWindow(tabState);
+
+  console.log('[ServiceWorker] ⚠️ 高危响应已触发:', { domain, score, correctUrl });
+}
+
+/**
+ * 注入下载拦截脚本
+ */
+async function injectDownloadBlocker(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        // 避免重复注入
+        if (window.__virusDetectorInjected) return;
+        window.__virusDetectorInjected = true;
+
+        // 移除所有链接的download属性
+        document.querySelectorAll('a[download]').forEach(a => a.removeAttribute('download'));
+
+        // 拦截可能导致下载的点击
+        const DANGEROUS_EXTS = ['.zip', '.rar', '.7z', '.tar', '.gz', '.tgz',
+          '.bz2', '.xz', '.iso', '.cab', '.arj', '.exe', '.msi', '.dmg', '.apk',
+          '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.jar', '.appx', '.deb', '.rpm'];
+
+        // 下载相关中英文关键词（用于匹配按钮文本）
+        const DOWNLOAD_KEYWORDS = [
+          '下载', 'download', '下載', 'ダウンロード',
+          '立即安装', '立即下载', '免费下载', '高速下载', '安全下载',
+          '点击下载', '直接下载', '本地下载', '官方下载',
+          'Download Now', 'Free Download', 'Download Free',
+          'install', 'setup', 'get started'
+        ];
+
+        /**
+         * 检查元素是否带有下载意图
+         */
+        function hasDownloadIntent(el) {
+          const text = (el.textContent || '').toLowerCase().trim();
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          const title = (el.getAttribute('title') || '').toLowerCase();
+          const combined = text + ' ' + aria + ' ' + title;
+
+          return DOWNLOAD_KEYWORDS.some(kw => combined.includes(kw.toLowerCase()));
+        }
+
+        // 全局点击拦截
+        document.addEventListener('click', function(e) {
+          const target = e.target.closest('a, button, [role="button"], [onclick]');
+          if (!target) return;
+
+          let shouldBlock = false;
+
+          // 检查1: href指向危险扩展名
+          if (target.tagName === 'A' && target.href) {
+            const href = target.href.toLowerCase();
+            if (DANGEROUS_EXTS.some(ext => href.endsWith(ext))) {
+              shouldBlock = true;
+            }
+          }
+
+          // 检查2: 按钮或链接文本包含下载关键词
+          if (!shouldBlock && hasDownloadIntent(target)) {
+            shouldBlock = true;
+          }
+
+          // 检查3: 父级元素文本也包含下载关键词
+          if (!shouldBlock) {
+            const parent = target.closest('[class*="download"], [id*="download"], ' +
+              '[class*="btn-dl"], [class*="btn_dl"]');
+            if (parent) shouldBlock = true;
+          }
+
+          if (shouldBlock) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            alert('⚠️ 当前网站已被识别为危险网站，下载已被禁用。\n请前往官方网站下载安全版本。');
+            return false;
+          }
+        }, true);
+
+        // 页面加载后遍历并禁用现有的下载按钮
+        function disableExistingDownloadButtons() {
+          // 禁用所有带下载文本的<a>和<button>
+          const allInteractive = document.querySelectorAll('a, button, [role="button"], input[type="submit"], input[type="button"]');
+          for (const el of allInteractive) {
+            if (hasDownloadIntent(el)) {
+              el.style.pointerEvents = 'none';
+              el.style.opacity = '0.5';
+              el.style.cursor = 'not-allowed';
+              el.title = '下载已被安全插件禁用';
+              if (el.tagName === 'A') {
+                el.removeAttribute('href');
+                el.setAttribute('data-original-href', el.href || '');
+              }
+              el.setAttribute('disabled', 'disabled');
+              el.classList.add('virus-detector-blocked');
+            }
+          }
+
+          // 禁用常见的下载容器
+          const downloadContainers = document.querySelectorAll(
+            '[class*="download"], [id*="download"], ' +
+            '[class*="btn-dl"], [class*="btn_dl"], ' +
+            '[class*="down-btn"], [class*="down_btn"], ' +
+            '.dl-btn, .dl_box, .down_url'
+          );
+          for (const container of downloadContainers) {
+            const links = container.querySelectorAll('a, button');
+            for (const link of links) {
+              link.style.pointerEvents = 'none';
+              link.style.opacity = '0.4';
+              link.title = '下载已被安全插件禁用';
+              if (link.tagName === 'A') link.removeAttribute('href');
+              link.setAttribute('disabled', 'disabled');
+            }
+          }
+        }
+
+        // 初始执行
+        disableExistingDownloadButtons();
+
+        // 监听DOM变化（处理动态加载的下载按钮）
+        const observer = new MutationObserver(() => {
+          disableExistingDownloadButtons();
+        });
+
+        if (document.body) {
+          observer.observe(document.body, { childList: true, subtree: true });
+          // 30秒后停止观察
+          setTimeout(() => observer.disconnect(), 30000);
+        }
+
+        // 添加半透明遮罩警告
+        if (!document.getElementById('__virus_detector_overlay')) {
+          const overlay = document.createElement('div');
+          overlay.id = '__virus_detector_overlay';
+          overlay.innerHTML = `
+            <div style="position:fixed;top:0;left:0;right:0;z-index:2147483646;
+              background:linear-gradient(135deg,#b71c1c,#c62828);color:#fff;
+              text-align:center;padding:12px 20px;font-size:14px;font-weight:bold;
+              font-family:-apple-system,BlinkMacSystemFont,'Microsoft YaHei',sans-serif;
+              box-shadow:0 2px 12px rgba(183,28,28,0.5);">
+              ⚠️ 风险警告：该网站被检测为疑似钓鱼/恶意网站，请勿输入个人信息或下载任何文件！
+            </div>
+          `;
+          document.documentElement.appendChild(overlay);
+        }
+      },
+      injectImmediately: true
+    }).catch(e => console.error('[ServiceWorker] 注入拦截脚本失败:', e));
+  } catch (e) {
+    console.error('[ServiceWorker] 注入失败:', e);
+  }
+}
+
+/**
+ * 打开警告窗口
+ */
+// 记录上次弹窗的域名，避免同域名重复弹窗
+let _lastWarningDomain = '';
+let _lastWarningTime = 0;
+
+function openWarningWindow(tabState) {
+  const domain = tabState.domain || '';
+  const now = Date.now();
+
+  // 同域名冷却期内不重复弹窗
+  if (domain === _lastWarningDomain && (now - _lastWarningTime) < WARNING_COOLDOWN_MS) {
+    console.log('[ServiceWorker] 同域名弹窗冷却中，跳过:', domain);
+    return;
+  }
+  _lastWarningDomain = domain;
+  _lastWarningTime = now;
+
+  const params = new URLSearchParams({
+    domain: tabState.domain || '未知',
+    score: String(tabState.score || 0),
+    correctUrl: tabState.correctUrl || '',
+    officialName: tabState.officialName || ''
+  });
+
+  chrome.windows.create({
+    url: chrome.runtime.getURL('warning/warning.html?' + params.toString()),
+    type: 'popup',
+    width: 480,
+    height: 560,
+    focused: true
+  }).catch(() => {
+    chrome.tabs.create({
+      url: chrome.runtime.getURL('warning/warning.html?' + params.toString())
+    }).catch(() => {});
+  });
+}
+
+// ==================== 页面分析 ====================
+
+/**
+ * 完整的页面分析流程
+ */
+async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
+  let tabState = await loadTabState(tabId);
+
+  // 是否有来自 Content Script 的新数据
+  const hasFreshData = !!(pageMetrics || linkMetrics);
+
+  // 缓存检查（仅当无新数据时才使用缓存，避免用不含规则四/五的结果拦截更新）
+  if (!hasFreshData) {
+    const cached = await CacheManager.get(domain);
+    if (cached) {
+      console.log('[ServiceWorker] 使用缓存结果:', domain, cached.score);
+      tabState.score = cached.score;
+      tabState.riskLevel = cached.isMalicious ? RISK_LEVEL.WARNING : RISK_LEVEL.SAFE;
+      tabState.isAnalyzed = true;
+      tabState.correctUrl = cached.correctUrl;
+      tabState.ruleResults = cached.ruleResults || tabState.ruleResults;
+      tabState.lastAnalyzed = Date.now();
+      tabState.url = url;
+      tabState.domain = domain;
+
+      await saveTabState(tabId, tabState);
+
+      if (cached.isMalicious) {
+        setIconRed(tabId);
+        await injectDownloadBlocker(tabId);
+      } else {
+        setIconGreen(tabId, cached.score);
+      }
+      return;
+    }
+  }
+
+  // 构建页面上下文（不再需要SSL检测）
+  const ctx = {
+    url: tabState.url || url,
+    domain: tabState.domain || domain,
+    pageText: tabState.pageText || '',
+    icpStrings: tabState.icpStrings || [],
+    linkMetrics: linkMetrics || tabState.linkMetrics || null,
+    downloadState: tabState.downloadState || { hasDownloadedArchive: false },
+    pageMetrics: pageMetrics || tabState.pageMetrics || null
+  };
+
+  // 运行评分引擎
+  try {
+    const evalResult = await ScoringEngine.evaluate(ctx);
+
+    tabState.score = evalResult.totalScore;
+    tabState.riskLevel = evalResult.riskLevel;
+    tabState.ruleResults = evalResult.breakdown;
+    tabState.correctUrl = evalResult.correctUrl;
+    tabState.officialName = evalResult.officialName;
+    tabState.isAnalyzed = true;
+    tabState.lastAnalyzed = Date.now();
+    if (pageMetrics) tabState.pageMetrics = pageMetrics;
+    if (linkMetrics) tabState.linkMetrics = linkMetrics;
+
+    await saveTabState(tabId, tabState);
+
+    // 写入缓存
+    await CacheManager.set(domain, {
+      score: evalResult.totalScore,
+      isMalicious: evalResult.isSuspicious,
+      correctUrl: evalResult.correctUrl,
+      ruleResults: evalResult.breakdown
+    });
+
+    // 根据分数执行响应
+    if (evalResult.totalScore >= SCORE_THRESHOLD) {
+      await triggerWarningFlow(tabId, tabState);
+    } else {
+      setIconGreen(tabId, evalResult.totalScore);
+    }
+
+    console.log('[ServiceWorker] 分析完成:', {
+      domain, score: evalResult.totalScore,
+      riskLevel: evalResult.riskLevel, cached: false
+    });
+
+  } catch (error) {
+    console.error('[ServiceWorker] 评分失败:', error);
+  }
+}
+
+// ==================== 事件监听 ====================
+
+// 页面导航完成
+chrome.webNavigation.onCompleted.addListener(async (details) => {
+  if (details.frameId !== 0) return;
+  const { tabId, url } = details;
+
+  if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') ||
+      url.startsWith('about:') || url.startsWith('edge://')) {
+    resetIcon(tabId); await clearTabState(tabId); return;
+  }
+
+  const domain = UrlUtils.extractHostname(url);
+  let tabState = await loadTabState(tabId);
+  tabState.url = url; tabState.domain = domain;
+  tabState.downloadState = tabState.downloadState || { hasDownloadedArchive: false };
+  tabState.isAnalyzed = false;
+  await saveTabState(tabId, tabState);
+
+  // 启动分析（异步，不阻塞导航事件）
+  analyzePage(tabId, url, domain, null, null).catch(e =>
+    console.error('[ServiceWorker] analyzePage error:', e));
+});
+
+// 下载创建事件
+chrome.downloads.onCreated.addListener(async (downloadItem) => {
+  try {
+    if (!ScoringEngine.isArchiveFile(downloadItem.filename)) return;
+
+    console.log('[ServiceWorker] 检测到压缩包下载:', downloadItem.filename);
+
+    // 尝试找到源标签页
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs.length === 0) return;
+    const tabId = tabs[0].id;
+
+    const tabState = await loadTabState(tabId);
+
+    // 更新下载状态
+    tabState.downloadState = {
+      hasDownloadedArchive: true,
+      archiveFileName: downloadItem.filename.split(/[\\/]/).pop(),
+      downloadId: downloadItem.id
+    };
+
+    // 重新计算规则二
+    const existingScore = Object.values(tabState.ruleResults)
+      .reduce((sum, r) => sum + (r.score || 0), 0);
+    const rule2Result = ScoringEngine._evaluateRule2(tabState.downloadState, existingScore);
+
+    tabState.ruleResults.rule2 = rule2Result;
+
+    // 重新计算总分
+    const newScore = Object.values(tabState.ruleResults)
+      .reduce((sum, r) => sum + (r.score || 0), 0);
+    tabState.score = newScore;
+    tabState.riskLevel = newScore >= SCORE_THRESHOLD ? RISK_LEVEL.WARNING : RISK_LEVEL.SAFE;
+
+    await saveTabState(tabId, tabState);
+
+    // 分数达标 → 取消下载 + 高危响应
+    if (newScore >= SCORE_THRESHOLD) {
+      // 取消下载
+      try {
+        await chrome.downloads.cancel(downloadItem.id);
+        console.log('[ServiceWorker] 已取消危险下载:', downloadItem.filename);
+      } catch (e) {
+        console.error('[ServiceWorker] 取消下载失败:', e);
+      }
+
+      // 更新缓存
+      await CacheManager.set(tabState.domain, {
+        score: newScore, isMalicious: true,
+        correctUrl: tabState.correctUrl,
+        ruleResults: tabState.ruleResults
+      });
+
+      // 触发完整高危响应
+      await triggerWarningFlow(tabId, tabState);
+    } else {
+      setIconGreen(tabId, newScore);
+    }
+  } catch (e) {
+    console.error('[ServiceWorker] 下载处理失败:', e);
+  }
+});
+
+// 消息路由
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || !message.type) { sendResponse({ error: 'invalid' }); return false; }
+
+  const type = message.type;
+
+  switch (type) {
+    case MSG_TYPES.PAGE_ANALYSIS_RESULT:
+    case 'PAGE_ANALYSIS_RESULT': {
+      const tabId = sender.tab ? sender.tab.id : null;
+      if (!tabId) { sendResponse({ received: false }); return false; }
+      const { url, domain, pageText, icpStrings, pageMetrics, linkMetrics } = message.payload;
+
+      loadTabState(tabId).then(async (ts) => {
+        ts.pageText = pageText || '';
+        ts.icpStrings = icpStrings || [];
+        ts.url = url || ts.url;
+        ts.domain = domain || ts.domain;
+        if (pageMetrics) ts.pageMetrics = pageMetrics;
+        if (linkMetrics) ts.linkMetrics = linkMetrics;
+        await saveTabState(tabId, ts);
+        // 触发完整分析
+        analyzePage(tabId, ts.url, ts.domain, pageMetrics, linkMetrics).catch(console.error);
+      });
+      sendResponse({ received: true });
+      break;
+    }
+
+    case MSG_TYPES.GET_TAB_STATE:
+    case 'GET_TAB_STATE': {
+      chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
+        if (tabs.length === 0) { sendResponse({ success: false, error: 'no tab' }); return; }
+        const ts = await loadTabState(tabs[0].id);
+        sendResponse({
+          success: true,
+          data: {
+            url: ts.url, domain: ts.domain, score: ts.score,
+            riskLevel: ts.riskLevel, isAnalyzed: ts.isAnalyzed,
+            ruleResults: ts.ruleResults, correctUrl: ts.correctUrl,
+            officialName: ts.officialName
+          }
+        });
+      });
+      return true;
+    }
+
+    case MSG_TYPES.GET_OFFICIAL_LINK:
+    case 'GET_OFFICIAL_LINK': {
+      const url = DomainDatabase.getCorrectUrl(message.payload?.name || '');
+      sendResponse({ success: true, officialUrl: url });
+      break;
+    }
+
+    case MSG_TYPES.CLEAR_TAB_STATE:
+    case 'CLEAR_TAB_STATE': {
+      chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
+        if (tabs.length > 0) { await clearTabState(tabs[0].id); resetIcon(tabs[0].id); }
+        sendResponse({ success: true });
+      });
+      return true;
+    }
+
+    default: { sendResponse({ error: 'unknown type: ' + type }); }
+  }
+  return false;
+});
+
+// 通知按钮
+chrome.notifications.onButtonClicked.addListener(async (notifId, btnIdx) => {
+  if (btnIdx === 0) {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs.length > 0) {
+      const ts = await loadTabState(tabs[0].id);
+      if (ts.correctUrl) {
+        chrome.tabs.create({ url: ts.correctUrl });
+      }
+    }
+  }
+});
+
+// 标签页关闭清理
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await clearTabState(tabId);
+  _warningCooldown.delete(tabId);
+});
+
+// 安装/更新
+chrome.runtime.onInstalled.addListener(async (details) => {
+  console.log('[ServiceWorker] 扩展已安装/更新:', details.reason);
+  if (details.reason === 'update') {
+    await CacheManager.clearAll();
+  }
+});
+
+console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v1.1.0 已就绪');

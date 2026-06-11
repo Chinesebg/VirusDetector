@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>银狐木马检测</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 标题栏 -->
+    <div id="header" class="header-safe">
+      <div class="header-icon">🛡️</div>
+      <div class="header-text"><h1>银狐木马检测</h1><span class="header-subtitle">Virus Detector v1.1</span></div>
+    </div>
+
+    <!-- 内容区 -->
+    <div id="main-content">
+      <!-- 加载 -->
+      <div id="loading"><div class="spinner"></div><p>正在分析网站...</p></div>
+
+      <!-- 安全面板 -->
+      <div id="safe-panel" style="display:none;">
+        <div class="score-display safe">
+          <div class="score-icon">✅</div>
+          <div class="score-value" id="score-value">0</div>
+          <div class="score-label">安全评分</div>
+        </div>
+        <div class="status-badge safe" id="status-text">安全</div>
+        <div class="info-card">
+          <div class="card-title">📋 当前网站</div>
+          <div class="info-row"><span class="info-label">域名</span><span class="info-value" id="current-domain">-</span></div>
+          <div class="info-row"><span class="info-label">风险等级</span><span class="info-value safe-text">🟢 正常</span></div>
+        </div>
+      </div>
+
+      <!-- 警告面板 -->
+      <div id="warning-panel" style="display:none;">
+        <div class="score-display danger">
+          <div class="score-icon">🚨</div>
+          <div class="score-value" id="warning-score-value">0</div>
+          <div class="score-label">风险评分</div>
+        </div>
+        <div class="status-badge danger" id="warning-status-text">⚠️ 危险警告</div>
+        <div class="alert-box">
+          <div class="alert-icon">⚠️</div>
+          <div class="alert-text">
+            <strong>风险警告</strong>
+            <p>该网站疑似银狐木马钓鱼网站！请勿输入任何个人信息或下载文件。</p>
+          </div>
+        </div>
+        <div id="official-link-section" style="display:none;">
+          <a id="official-link-btn" class="official-link-btn" href="#" target="_blank">
+            ✅ 前往官方网站
+            <span id="official-link-text"></span>
+          </a>
+        </div>
+      </div>
+
+      <!-- 5规则检测详情 -->
+      <div id="details-section">
+        <div class="details-title">🔍 检测详情</div>
+        <div class="detail-items">
+          <div class="detail-item" id="detail-rule1">
+            <span class="detail-icon">⏳</span>
+            <span class="detail-text">域名仿冒检测: 待检测</span>
+          </div>
+          <div class="detail-item" id="detail-rule2">
+            <span class="detail-icon">⏳</span>
+            <span class="detail-text">下载检测: 待检测</span>
+          </div>
+          <div class="detail-item" id="detail-rule3">
+            <span class="detail-icon">⏳</span>
+            <span class="detail-text">ICP备案: 待检测</span>
+          </div>
+          <div class="detail-item" id="detail-rule4">
+            <span class="detail-icon">⏳</span>
+            <span class="detail-text">链接分析: 待检测</span>
+          </div>
+          <div class="detail-item" id="detail-rule5">
+            <span class="detail-icon">⏳</span>
+            <span class="detail-text">代码工程化: 待检测</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 安全建议（仅警告时） -->
+      <div id="safety-tips" style="display:none;">
+        <div class="tips-title">📌 安全建议</div>
+        <ul>
+          <li>不要在此网站输入任何个人信息</li>
+          <li>不要下载或运行此网站的任何文件</li>
+          <li>立即关闭此页面并前往官方网站</li>
+          <li>通过官方渠道下载软件</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 底部 -->
+    <div id="footer">
+      <button id="refresh-btn" class="footer-btn">🔄 重新检测</button>
+      <span class="footer-version">v1.1.0</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
