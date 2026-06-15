@@ -4,7 +4,7 @@
  * 实现多规则评分体系，总分 >= 100 分时判定为危险网站。
  *
  * @module scoring-engine
- * @version 2.1.0-alpha.1
+ * @version 2.1.0-alpha.2
  *
  * 评分规则：
  *   规则一 域名仿冒         → 60 分 | 5 层递进：子串包含 → 段级关键词 → 可疑TLD → 关键词堆叠 → 编辑距离
@@ -63,20 +63,20 @@ export class ScoringEngine {
     // 优化：域名检测和ICP检测均确认安全 → 跳过规则四/五（官方网站早期退出）
     const isConfirmedOfficial = (
       !result1.triggered && !result3.triggered &&
-      result1.detailCN.startsWith('✓') && result3.detailCN.startsWith('✓')
+      result1.status === 'pass' && result3.status === 'pass'
     );
 
     let result4, result5;
     if (isConfirmedOfficial) {
       result4 = {
-        score: 0, triggered: false,
+        score: 0, triggered: false, status: 'pass',
         detail: '官方网站，跳过链接分析',
-        detailCN: '✓ 链接分析: 官方网站'
+        detailCN: '链接分析: 官方网站'
       };
       result5 = {
-        score: 0, triggered: false,
+        score: 0, triggered: false, status: 'pass',
         detail: '官方网站，跳过代码工程化检查',
-        detailCN: '✓ 代码工程化: 官方网站'
+        detailCN: '代码工程化: 官方网站'
       };
     } else {
       result4 = this._evaluateRule4(linkMetrics, domain);
@@ -87,7 +87,7 @@ export class ScoringEngine {
     const result2 = this._evaluateRule2(downloadState, existingScore);
 
     // 域名年龄评分（Whois API）：非官方域名时调用，基于注册天数 S 型衰减计分
-    let domainAgeResult = { score: 0, triggered: false, detail: '', detailCN: '✓ 域名年龄: 未检测', creationDays: -1 };
+    let domainAgeResult = { score: 0, triggered: false, status: 'pass', detail: '', detailCN: '域名年龄: 未检测', creationDays: -1 };
     if (!isConfirmedOfficial) {
       domainAgeResult = await this._evaluateDomainAge(domain);
     }
@@ -97,7 +97,7 @@ export class ScoringEngine {
       result4.score + result5.score + domainAgeResult.score;
 
     // 域名年龄减分（Whois API）：仅当初步总分 >= 阈值时应用，基于注册时长抵消可疑性
-    let ageBonusResult = { score: 0, triggered: false, detail: '', detailCN: '✓ 域名减分: 未应用', bonusScore: 0 };
+    let ageBonusResult = { score: 0, triggered: false, status: 'pass', detail: '', detailCN: '域名减分: 未应用', bonusScore: 0 };
     if (!isConfirmedOfficial && preliminaryScore >= DOMAIN_AGE_BONUS_SCORE_THRESHOLD) {
       ageBonusResult = await this._evaluateDomainAgeBonus(domain, preliminaryScore, domainAgeResult);
     }
@@ -124,8 +124,8 @@ export class ScoringEngine {
   // ==================== 规则一：域名仿冒 (60分) ====================
   static _evaluateRule1(domain) {
     const result = {
-      score: 0, triggered: false,
-      detail: '', detailCN: '✓ 域名检查: 无异常',
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '域名检查: 无异常',
       matchedEntry: null, correctUrl: null, officialName: null
     };
 
@@ -133,7 +133,7 @@ export class ScoringEngine {
     const official = DomainDatabase.findByDomain(domain);
     if (official) {
       result.detail = '官方网站，域名匹配';
-      result.detailCN = '✓ 域名: 官方网站';
+      result.detailCN = '域名: 官方网站';
       return result;
     }
 
@@ -146,7 +146,7 @@ export class ScoringEngine {
       result.correctUrl = spoof.correctUrl;
       result.officialName = spoof.entry.name;
       result.detail = `域名仿冒检测: ${spoof.matchedBy}`;
-      result.detailCN = `✗ 域名仿冒: 疑似冒充「${spoof.entry.name}」(${spoof.correctUrl})`;
+      result.detailCN = `域名仿冒: 疑似冒充「${spoof.entry.name}」(${spoof.correctUrl})`;
       return result;
     }
 
@@ -156,8 +156,8 @@ export class ScoringEngine {
   // ==================== 规则二：压缩包下载 (40/10分) ====================
   static _evaluateRule2(downloadState, existingSuspicionScore) {
     const result = {
-      score: 0, triggered: false,
-      detail: '', detailCN: '✓ 下载检测: 未检测到压缩包',
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '下载检测: 未检测到压缩包',
       fileName: null
     };
 
@@ -172,13 +172,13 @@ export class ScoringEngine {
       result.score = SCORE_RULE_2_HIGH;
       result.triggered = true;
       result.detail = `下载压缩包: ${result.fileName} (域名已有${existingSuspicionScore}分嫌疑)`;
-      result.detailCN = `✗ 下载检测: 从可疑站点下载压缩包 (${result.fileName})`;
+      result.detailCN = `下载检测: 从可疑站点下载压缩包 (${result.fileName})`;
     } else {
       // 弱信号 → +10
       result.score = SCORE_RULE_2_LOW;
       result.triggered = true;
       result.detail = `下载压缩包: ${result.fileName} (弱信号)`;
-      result.detailCN = `⚠ 下载检测: 下载了压缩包 (${result.fileName})`;
+      result.detailCN = `下载检测: 下载了压缩包 (${result.fileName})`;
     }
 
     return result;
@@ -204,8 +204,9 @@ export class ScoringEngine {
     // 1. 官方域名本尊 → 跳过
     const official = DomainDatabase.findByDomain(domain);
     if (official) {
+      result.status = 'pass';
       result.detail = '官方网站，ICP检查通过';
-      result.detailCN = '✓ ICP备案: 官方网站';
+      result.detailCN = 'ICP备案: 官方网站';
       return result;
     }
 
@@ -213,18 +214,20 @@ export class ScoringEngine {
     const icpResult = IcpUtils.searchIcpNumber(pageText, icpStrings);
 
     if (icpResult.found) {
+      result.status = 'pass';
       result.icpFound = true;
       result.icpNumbers = icpResult.numbers;
       result.detail = `检测到ICP备案号: ${icpResult.numbers[0]}`;
-      result.detailCN = `✓ ICP备案: 已检测到 (${icpResult.numbers[0]})`;
+      result.detailCN = `ICP备案: 已检测到 (${icpResult.numbers[0]})`;
       return result;
     }
 
     // 3. 未找到 → 判定是否需要备案
     // 3a. 外国站点豁免白名单 → 确定不需要 ICP
     if (IcpUtils.isIcpExempt(domain)) {
+      result.status = 'neutral';
       result.detail = `外国站点（${domain}），ICP检查不适用`;
-      result.detailCN = '- ICP备案: 外国站点（不适用）';
+      result.detailCN = 'ICP备案: 外国站点（不适用）';
       return result;
     }
 
@@ -234,14 +237,15 @@ export class ScoringEngine {
       result.score = SCORE_RULE_3;  // +50
       result.triggered = true;
       result.detail = `未检测到ICP备案号（域名${domain}，页面含${cjkResult.cjkCount}个中文字符，占比${(cjkResult.cjkRatio * 100).toFixed(1)}%）`;
-      result.detailCN = `✗ ICP备案: 未检测到备案号`;
+      result.detailCN = `ICP备案: 未检测到备案号`;
       return result;
     }
 
     // 3c. 不在白名单 + 无 CJK 内容 → 弱信号
     result.score = 20;
+    result.status = 'warn';
     result.detail = `无中文内容且非已知外国站点（域名${domain}），缺少ICP为弱信号`;
-    result.detailCN = `⚠ ICP备案: 未检测到备案号（弱信号）`;
+    result.detailCN = `ICP备案: 未检测到备案号（弱信号）`;
 
     return result;
   }
@@ -260,13 +264,14 @@ export class ScoringEngine {
    */
   static _evaluateRule4(linkMetrics, domain) {
     const result = {
-      score: 0, triggered: false,
-      detail: '', detailCN: '✓ 链接分析: 正常'
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '链接分析: 正常'
     };
 
     if (!linkMetrics) {
+      result.status = 'neutral';
       result.detail = '未收集到链接数据';
-      result.detailCN = '- 链接分析: 未检测';
+      result.detailCN = '链接分析: 未检测';
       return result;
     }
 
@@ -305,7 +310,7 @@ export class ScoringEngine {
       result.score = partAScore;
       result.triggered = true;
       result.detail = '链接异常(Part A): ' + partAReasons.join('; ');
-      result.detailCN = '✗ 链接分析: ' + partAReasons.join(', ') + ' (+' + partAScore + ')';
+      result.detailCN = '链接分析: ' + partAReasons.join(', ') + ' (+' + partAScore + ')';
       return result;
     }
 
@@ -327,10 +332,10 @@ export class ScoringEngine {
       result.score = partBScore;
       result.triggered = true;
       result.detail = '外链风险(Part B): ' + partBReasons.join('; ');
-      result.detailCN = '✗ 链接分析: ' + partBReasons.join(', ') + ' (+' + partBScore + ')';
+      result.detailCN = '链接分析: ' + partBReasons.join(', ') + ' (+' + partBScore + ')';
     } else {
       result.detail = '链接分析未发现异常';
-      result.detailCN = '✓ 链接分析: 正常';
+      result.detailCN = '链接分析: 正常';
     }
 
     return result;
@@ -362,21 +367,23 @@ export class ScoringEngine {
    */
   static _evaluateRule5(pageMetrics, domain) {
     const result = {
-      score: 0, triggered: false,
-      detail: '', detailCN: '✓ 代码工程化: 正常',
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '代码工程化: 正常',
       metrics: pageMetrics || {}
     };
 
     if (!pageMetrics) {
+      result.status = 'neutral';
       result.detail = '未收集到页面度量信息';
-      result.detailCN = '- 代码工程化: 未检测';
+      result.detailCN = '代码工程化: 未检测';
       return result;
     }
 
     // 前提检查：文本内容太少 → 跳过（避免空白页/占位页误报）
     if (pageMetrics.textLength < AI_PAGE_THRESHOLDS.MIN_TEXT_LENGTH) {
+      result.status = 'neutral';
       result.detail = '页面文本内容不足，跳过代码工程化检测';
-      result.detailCN = '- 代码工程化: 内容不足';
+      result.detailCN = '代码工程化: 内容不足';
       return result;
     }
 
@@ -414,21 +421,21 @@ export class ScoringEngine {
       result.score = SCORE_RULE_5;  // +30
       result.triggered = true;
       result.detail = `代码工程质量差(${signalCount}/3信号): ${signals.join('; ')}`;
-      result.detailCN = `✗ 代码工程化: 高度可疑 (${signals.join(', ')})`;
+      result.detailCN = `代码工程化: 高度可疑 (${signals.join(', ')})`;
     } else if (signalCount >= AI_PAGE_THRESHOLDS.RULE_5_SIGNALS_PARTIAL) {
       // 2/3 信号命中 → 中度可疑
       result.score = SCORE_RULE_5_PARTIAL;  // +20
       result.triggered = true;
       result.detail = `代码工程化弱信号(${signalCount}/3信号): ${signals.join('; ')}`;
-      result.detailCN = `⚠ 代码工程化: 中度可疑 (${signals.join(', ')})`;
+      result.detailCN = `代码工程化: 中度可疑 (${signals.join(', ')})`;
     } else if (signalCount === 1) {
       // 1/3 信号 → 证据不足，不扣分（正常简单页面常有单个弱特征）
       result.detail = `代码工程化基本正常（仅${signals[0]}）`;
-      result.detailCN = '✓ 代码工程化: 基本正常';
+      result.detailCN = '代码工程化: 基本正常';
     } else {
       // 0/3 信号 → 完全正常
       result.detail = '代码工程化检测通过（DOM节点' + domNodeCount + '，外部资源' + totalExternal + '个）';
-      result.detailCN = '✓ 代码工程化: 正常';
+      result.detailCN = '代码工程化: 正常';
     }
 
     return result;
@@ -453,8 +460,8 @@ export class ScoringEngine {
    */
   static async _evaluateDomainAge(domain) {
     const result = {
-      score: 0, triggered: false,
-      detail: '', detailCN: '✓ 域名年龄: 正常',
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '域名年龄: 正常',
       creationDays: -1
     };
 
@@ -466,15 +473,17 @@ export class ScoringEngine {
       const errInfo = WhoisClient.lastError;
       const errPhase = errInfo ? ` [${errInfo.phase}]` : '';
       const errMsg = errInfo ? `: ${errInfo.message}` : '';
+      result.status = 'neutral';
       result.detail = `Whois API 查询失败${errPhase}${errMsg} (${domain})`;
-      result.detailCN = `- 域名年龄: API 查询失败${errPhase}`;
+      result.detailCN = `域名年龄: API 查询失败${errPhase}`;
       return result;
     }
 
     // API 调用成功，但 creation_days 数据未知或不可靠（如免费 API 返回 0 作为占位值）
     if (whoisResult.creationDays < 0) {
+      result.status = 'neutral';
       result.detail = `Whois API 返回的域名注册天数未知 (${domain})`;
-      result.detailCN = '- 域名年龄: 注册时间未知';
+      result.detailCN = '域名年龄: 注册时间未知';
       return result;
     }
 
@@ -490,10 +499,10 @@ export class ScoringEngine {
       result.score = score;
       result.triggered = true;
       result.detail = `域名注册仅${x}天（Whois），可疑加分+${score}（raw=${rawScore.toFixed(2)}）`;
-      result.detailCN = `✗ 域名年龄: 注册仅${x}天，可疑 +${score}`;
+      result.detailCN = `域名年龄: 注册仅${x}天，可疑 +${score}`;
     } else {
       result.detail = `域名注册${x}天（Whois），年龄正常`;
-      result.detailCN = `✓ 域名年龄: 已注册${x}天`;
+      result.detailCN = `域名年龄: 已注册${x}天`;
     }
 
     return result;
@@ -517,8 +526,8 @@ export class ScoringEngine {
    */
   static async _evaluateDomainAgeBonus(domain, preliminaryScore, domainAgeResult) {
     const result = {
-      score: 0, triggered: false,
-      detail: '', detailCN: '✓ 域名减分: 未应用',
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '域名减分: 未应用',
       bonusScore: 0
     };
 
@@ -528,8 +537,9 @@ export class ScoringEngine {
       // 不再重试 API：_evaluateDomainAge 已经调用过 WhoisClient，
       // 若 creationDays < 0 说明数据确实不可用（免费 API 对此域名无数据），
       // 重复请求只会浪费 API 配额并增加延迟（速率限制器每两次请求间隔 2s）
+      result.status = 'neutral';
       result.detail = `域名注册天数未知，无法应用域名年龄减分`;
-      result.detailCN = '- 域名减分: 注册时间未知';
+      result.detailCN = '域名减分: 注册时间未知';
       return result;
     }
 
@@ -558,10 +568,11 @@ export class ScoringEngine {
       result.bonusScore = effectiveBonus;
       result.triggered = true;
       result.detail = `域名注册${x}天，年龄减分-${effectiveBonus}（原始bonus=${bonusScore}，减分前=${preliminaryScore}）`;
-      result.detailCN = `✓ 域名减分: 已注册${x}天，年龄抵消 -${effectiveBonus}`;
+      result.detailCN = `域名减分: 已注册${x}天，年龄抵消 -${effectiveBonus}`;
     } else {
+      result.status = 'neutral';
       result.detail = `域名注册${x}天，不足${DOMAIN_AGE_BONUS_MIN_DAYS}天，不适用减分`;
-      result.detailCN = `- 域名减分: 仅注册${x}天，不适用`;
+      result.detailCN = `域名减分: 仅注册${x}天，不适用`;
     }
 
     return result;
@@ -584,8 +595,8 @@ export class ScoringEngine {
    */
   static async evaluateDownloadLink(downloadUrl, pageDomain) {
     const result = {
-      score: 0, triggered: false,
-      detail: '', detailCN: '✓ 下载链接: 同域下载',
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '下载链接: 同域下载',
       downloadDomain: '',
       whoisResult: null
     };
@@ -598,8 +609,9 @@ export class ScoringEngine {
       const urlObj = new URL(downloadUrl);
       downloadDomain = urlObj.hostname.toLowerCase();
     } catch (e) {
+      result.status = 'neutral';
       result.detail = '无法解析下载链接URL';
-      result.detailCN = '- 下载链接: URL 解析失败';
+      result.detailCN = '下载链接: URL 解析失败';
       return result;
     }
 
@@ -612,7 +624,7 @@ export class ScoringEngine {
     // 同主域名 → 不跨域，不加分
     if (pageMainDomain === downloadMainDomain) {
       result.detail = `下载链接同域 (${downloadDomain})，不加分`;
-      result.detailCN = `✓ 下载链接: 同域 (${downloadDomain})`;
+      result.detailCN = `下载链接: 同域 (${downloadDomain})`;
       return result;
     }
 
@@ -620,7 +632,7 @@ export class ScoringEngine {
     result.score = 10;
     result.triggered = true;
     result.detail = `下载链接跨域 (${downloadDomain} ≠ ${pageDomain})，+10`;
-    result.detailCN = `✗ 下载链接: 跨域下载 (${downloadDomain}) +10`;
+    result.detailCN = `下载链接: 跨域下载 (${downloadDomain}) +10`;
 
     // 查询下载链接域名的 Whois 信息，检查是否为新注册域名
     const whoisResult = await WhoisClient.lookup(downloadDomain);

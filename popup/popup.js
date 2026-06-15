@@ -1,5 +1,5 @@
 /**
- * 银狐木马检测 - Popup UI (v2.1.0-alpha.1)
+ * 银狐木马检测 - Popup UI (v2.1.0-alpha.2)
  * SVG图标系统 + 优化排版 + 白名单极简模式
  */
 (function () {
@@ -47,12 +47,16 @@
     detailsSection: $('details-section'),
     refreshBtn: $('refresh-btn'),
     whitelistBtn: $('whitelist-btn'),
+    // 刻度尺相关元素
+    safeScoreIcon: $('safe-score-icon'),
+    safeGaugeIndicator: $('safe-gauge-indicator'),
+    warningScoreIcon: $('warning-score-icon'),
+    warningGaugeIndicator: $('warning-gauge-indicator'),
     detailRules: {
       rule1: $('detail-rule1'), rule2: $('detail-rule2'),
       rule3: $('detail-rule3'), rule4: $('detail-rule4'),
       rule5: $('detail-rule5'),
-      domainAge: $('detail-domainAge'), ageBonus: $('detail-ageBonus'),
-      downloadLink: $('detail-downloadLink')
+      domainAge: $('detail-domainAge'), ageBonus: $('detail-ageBonus')
     }
   };
 
@@ -82,6 +86,90 @@
     }
   }
 
+  // ==================== 刻度尺（Gauge）逻辑 ====================
+
+  /**
+   * 计算刻度尺指示器的水平位置百分比
+   * 分段线性映射: 0→0%, 80→50%(中间), 100→75%(右四等分), 200→100%(最右)
+   * 评分 >200 视为 200（封顶）
+   */
+  function calcGaugePosition(score) {
+    const clamped = Math.max(0, Math.min(200, score));
+    if (clamped <= 80) {
+      return (clamped / 80) * 50;                // 0% → 50%
+    } else if (clamped <= 100) {
+      return 50 + ((clamped - 80) / 20) * 25;     // 50% → 75%
+    } else {
+      return 75 + ((clamped - 100) / 100) * 25;    // 75% → 100%
+    }
+  }
+
+  /**
+   * 获取评分对应的颜色区域
+   * @returns {'green'|'yellow'|'red'}
+   */
+  function getScoreColorZone(score) {
+    if (score < 80) return 'green';
+    if (score < 100) return 'yellow';
+    return 'red';
+  }
+
+  /** 安全面板对勾图标 SVG（颜色动态） */
+  function buildCheckIconSvg(color) {
+    return '<svg viewBox="0 0 24 24" width="44" height="44">' +
+      '<circle cx="12" cy="12" r="11" fill="' + color + '"/>' +
+      '<path d="M7 12l3 3 7-7" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '</svg>';
+  }
+
+  /** 警告面板三角警告图标 SVG（颜色动态） */
+  function buildWarningIconSvg(color) {
+    return '<svg viewBox="0 0 24 24" width="44" height="44">' +
+      '<path d="M12 2L1 22h22L12 2z" fill="' + color + '"/>' +
+      '<path d="M12 10v4M12 17.5v.5" stroke="white" stroke-width="2.5" stroke-linecap="round"/>' +
+      '</svg>';
+  }
+
+  /**
+   * 动态更新评分卡片的颜色、图标、刻度尺指示器
+   * @param {HTMLElement} scoreValueEl  评分数字元素
+   * @param {HTMLElement} gaugeIndEl    刻度尺指示器容器
+   * @param {HTMLElement} scoreIconEl   图标容器（可选，仅安全面板）
+   * @param {number}      score         评分值
+   * @param {boolean}     isWarning     是否为警告面板
+   */
+  function updateScoreDisplay(scoreValueEl, gaugeIndEl, scoreIconEl, score, isWarning) {
+    const zone = getScoreColorZone(score);
+
+    // 1. 更新评分数字颜色
+    scoreValueEl.classList.remove('safe-color', 'warn-color', 'danger-color');
+    scoreValueEl.classList.add(
+      zone === 'green' ? 'safe-color' : zone === 'yellow' ? 'warn-color' : 'danger-color'
+    );
+
+    // 2. 更新图标颜色
+    if (scoreIconEl) {
+      const iconColorMap = { green: '#4CAF50', yellow: '#FF9800', red: '#F44336' };
+      const color = iconColorMap[zone];
+      if (isWarning) {
+        scoreIconEl.innerHTML = buildWarningIconSvg(color);
+      } else {
+        scoreIconEl.innerHTML = buildCheckIconSvg(color);
+      }
+    }
+
+    // 3. 更新刻度尺指示器位置
+    const position = calcGaugePosition(score);
+    gaugeIndEl.style.left = position + '%';
+
+    // 4. 更新刻度尺指示器颜色
+    const arrow = gaugeIndEl.querySelector('.gauge-arrow');
+    if (arrow) {
+      arrow.classList.remove('arrow-green', 'arrow-yellow', 'arrow-red');
+      arrow.classList.add('arrow-' + zone);
+    }
+  }
+
   function updateWhitelistButton(isWhitelisted) {
     if (isWhitelisted) {
       els.whitelistBtn.innerHTML = ICONS.starOff + '移出白名单';
@@ -101,7 +189,10 @@
     els.officialLinkSection.style.display = 'none';
     els.detailsSection.style.display = 'block';
     els.header.className = 'header-safe';
-    els.scoreValue.textContent = data.score || 0;
+    var score = data.score || 0;
+    els.scoreValue.textContent = score;
+    // 动态更新评分卡片（颜色、图标、刻度尺指示器）
+    updateScoreDisplay(els.scoreValue, els.safeGaugeIndicator, els.safeScoreIcon, score, false);
     els.statusText.textContent = '安全';
     els.currentDomain.textContent = data.domain || '-';
     els.riskLevelText.textContent = '正常';
@@ -127,7 +218,10 @@
     els.safetyTips.style.display = 'block';
     els.detailsSection.style.display = 'block';
     els.header.className = 'header-danger';
-    els.warningScoreValue.textContent = data.score || 0;
+    var score = data.score || 0;
+    els.warningScoreValue.textContent = score;
+    // 动态更新评分卡片（颜色、图标、刻度尺指示器）
+    updateScoreDisplay(els.warningScoreValue, els.warningGaugeIndicator, els.warningScoreIcon, score, true);
     els.warningStatusText.textContent = '危险警告';
 
     if (data.correctUrl) {
@@ -139,7 +233,7 @@
     }
   }
 
-  // ==================== 检测详情更新（SVG图标 + 去重前缀） ====================
+  // ==================== 检测详情更新（SVG图标，基于 rule.status 字段判定） ====================
 
   function updateDetails(ruleResults) {
     if (!ruleResults) return;
@@ -157,25 +251,29 @@
         continue;
       }
 
-      // 剥离 detailCN 前缀符号（✓ ✗ ⚠ - 等），避免与左侧SVG图标重复
-      var cleanText = rule.detailCN.replace(/^(?:✓|✗|⚠️?|-)\s*/, '');
-
-      if (rule.triggered) {
-        iconEl.innerHTML = ICONS.cross;
-        textEl.textContent = cleanText;
-        textEl.className = 'detail-text triggered';
-      } else if (rule.detailCN.startsWith('✓')) {
+      // 根据 rule.status 字段确定图标（不再依赖 detailCN 文本前缀）
+      if (rule.triggered && key === 'ageBonus') {
+        // 域名年龄减分触发是正面信号（抵消可疑分数），显示绿色对勾
         iconEl.innerHTML = ICONS.check;
-        textEl.textContent = cleanText;
+        textEl.textContent = rule.detailCN;
         textEl.className = 'detail-text passed';
-      } else if (rule.detailCN.startsWith('⚠')) {
+      } else if (rule.triggered) {
+        iconEl.innerHTML = ICONS.cross;
+        textEl.textContent = rule.detailCN;
+        textEl.className = 'detail-text triggered';
+      } else if (rule.status === 'warn') {
         iconEl.innerHTML = ICONS.warn;
-        textEl.textContent = cleanText;
+        textEl.textContent = rule.detailCN;
+        textEl.className = 'detail-text neutral';
+      } else if (rule.status === 'neutral') {
+        iconEl.innerHTML = ICONS.dash;
+        textEl.textContent = rule.detailCN;
         textEl.className = 'detail-text neutral';
       } else {
-        iconEl.innerHTML = ICONS.dash;
-        textEl.textContent = cleanText;
-        textEl.className = 'detail-text neutral';
+        // status === 'pass' 或 undefined（向后兼容旧缓存数据）
+        iconEl.innerHTML = ICONS.check;
+        textEl.textContent = rule.detailCN;
+        textEl.className = 'detail-text passed';
       }
     }
   }

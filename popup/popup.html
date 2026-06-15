@@ -16,7 +16,7 @@
           <path d="M9 11l2 2 4-4"/>
         </svg>
       </div>
-      <div class="header-text"><h1>银狐木马检测</h1><span class="header-subtitle">Virus Detector v2.1.0-alpha.1</span></div>
+      <div class="header-text"><h1>银狐木马检测</h1><span class="header-subtitle">Virus Detector v2.1.0-alpha.2</span></div>
     </div>
 
     <!-- 内容区 -->
@@ -26,15 +26,26 @@
 
       <!-- 安全面板 -->
       <div id="safe-panel" style="display:none;">
-        <div class="score-display safe">
-          <div class="score-icon">
-            <svg viewBox="0 0 24 24" width="36" height="36">
-              <circle cx="12" cy="12" r="11" fill="#4CAF50"/>
-              <path d="M7 12l3 3 7-7" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
+        <div class="score-display safe" id="score-display-safe">
+          <div class="score-main">
+            <div class="score-icon" id="safe-score-icon">
+              <svg viewBox="0 0 24 24" width="44" height="44">
+                <circle cx="12" cy="12" r="11" fill="#4CAF50"/>
+                <path d="M7 12l3 3 7-7" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="score-value safe-color" id="score-value">0</div>
           </div>
-          <div class="score-value" id="score-value">0</div>
-          <div class="score-label">安全评分</div>
+          <div class="score-gauge">
+            <div class="gauge-bar">
+              <div class="gauge-segment gauge-green"></div>
+              <div class="gauge-segment gauge-yellow"></div>
+              <div class="gauge-segment gauge-red"></div>
+            </div>
+            <div class="gauge-indicator" id="safe-gauge-indicator">
+              <div class="gauge-arrow"></div>
+            </div>
+          </div>
         </div>
         <div class="status-badge safe" id="status-text">安全</div>
         <div class="info-card">
@@ -49,15 +60,26 @@
 
       <!-- 警告面板 -->
       <div id="warning-panel" style="display:none;">
-        <div class="score-display danger">
-          <div class="score-icon">
-            <svg viewBox="0 0 24 24" width="36" height="36">
-              <path d="M12 2L1 22h22L12 2z" fill="#F44336"/>
-              <path d="M12 10v4M12 17.5v.5" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
-            </svg>
+        <div class="score-display danger" id="score-display-danger">
+          <div class="score-main">
+            <div class="score-icon" id="warning-score-icon">
+              <svg viewBox="0 0 24 24" width="44" height="44">
+                <path d="M12 2L1 22h22L12 2z" fill="#F44336"/>
+                <path d="M12 10v4M12 17.5v.5" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="score-value danger-color" id="warning-score-value">0</div>
           </div>
-          <div class="score-value" id="warning-score-value">0</div>
-          <div class="score-label">风险评分</div>
+          <div class="score-gauge">
+            <div class="gauge-bar">
+              <div class="gauge-segment gauge-green"></div>
+              <div class="gauge-segment gauge-yellow"></div>
+              <div class="gauge-segment gauge-red"></div>
+            </div>
+            <div class="gauge-indicator" id="warning-gauge-indicator">
+              <div class="gauge-arrow"></div>
+            </div>
+          </div>
         </div>
         <div class="status-badge danger" id="warning-status-text">危险警告</div>
         <div class="alert-box">
@@ -132,10 +154,6 @@
             <span class="detail-icon"></span>
             <span class="detail-text">域名减分: 待检测</span>
           </div>
-          <div class="detail-item" id="detail-downloadLink">
-            <span class="detail-icon"></span>
-            <span class="detail-text">下载链接: 待检测</span>
-          </div>
         </div>
       </div>
 
@@ -164,7 +182,7 @@
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0114.8-3.7L23 10M.5 15a9 9 0 0014.8 3.7L20 15"/></svg>
         重新检测
       </button>
-      <span class="footer-version">v2.1.0-alpha.1</span>
+      <span class="footer-version">v2.1.0-alpha.2</span>
     </div>
   </div>
 
