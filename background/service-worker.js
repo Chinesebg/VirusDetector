@@ -162,26 +162,50 @@ function setIconWhitelist(tabId) {
 // 白名单存储在 chrome.storage.local 中，键名为 STORAGE_KEYS.WHITELIST
 // 数据结构：string[] — 域名列表（不含协议和路径，如 "example.com"）
 // 白名单中的域名完全跳过 5 规则检测，工具栏图标显示蓝色 "✓" 徽章
+//
+// 性能优化：内存缓存 + storage.onChanged 失效机制，避免每次操作都读存储。
 
-/** 从存储加载白名单 @returns {Promise<string[]>} */
+/** @type {Set<string>|null} 内存缓存的白名单域名集合 */
+let _whitelistCache = null;
+
+/**
+ * 从存储加载白名单（优先返回内存缓存）
+ * @returns {Promise<string[]>}
+ */
 async function loadWhitelist() {
+  if (_whitelistCache) {
+    return [..._whitelistCache];
+  }
   try {
     const r = await chrome.storage.local.get(STORAGE_KEYS.WHITELIST);
-    return r[STORAGE_KEYS.WHITELIST] || [];
+    const list = r[STORAGE_KEYS.WHITELIST] || [];
+    _whitelistCache = new Set(list);
+    return list;
   } catch (e) { return []; }
+}
+
+/** 使白名单内存缓存失效，下次 loadWhitelist 重新从存储读取 */
+function _invalidateWhitelistCache() {
+  _whitelistCache = null;
 }
 
 async function saveWhitelist(whitelist) {
   try {
     await chrome.storage.local.set({ [STORAGE_KEYS.WHITELIST]: whitelist });
+    // 同步更新内存缓存
+    _whitelistCache = new Set(whitelist);
   } catch (e) { /* ignore */ }
 }
 
 /**
  * 检查URL对应域名是否在白名单中
+ * 优化：优先 O(1) 内存缓存查找，避免每次异步读存储
  */
 async function isWhitelisted(url) {
   const domain = UrlUtils.extractHostname(url);
+  if (_whitelistCache) {
+    return _whitelistCache.has(domain);
+  }
   const whitelist = await loadWhitelist();
   return whitelist.includes(domain);
 }
@@ -191,6 +215,11 @@ async function isWhitelisted(url) {
  */
 async function addToWhitelist(url) {
   const domain = UrlUtils.extractHostname(url);
+  // 先用内存缓存快速判断，避免无谓的存储读取
+  if (_whitelistCache && _whitelistCache.has(domain)) {
+    console.log('[ServiceWorker] 域名已在白名单:', domain);
+    return;
+  }
   const whitelist = await loadWhitelist();
   if (!whitelist.includes(domain)) {
     whitelist.push(domain);
@@ -889,6 +918,13 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('[ServiceWorker] 扩展已安装/更新:', details.reason);
   if (details.reason === 'update') {
     await CacheManager.clearAll();
+  }
+});
+
+// 存储变更监听：白名单被其他页面修改时使内存缓存失效
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[STORAGE_KEYS.WHITELIST]) {
+    _whitelistCache = null;
   }
 });
 

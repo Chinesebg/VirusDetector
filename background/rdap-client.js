@@ -546,7 +546,8 @@ async function _lookupViaProxy(domain) {
   let response;
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), RDAP_REQUEST_TIMEOUT);
+    const PROXY_TIMEOUT = 5000; // 代理是备用通道，用更短超时
+    const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT);
     response = await fetch(queryUrl, {
       method: 'GET',
       signal: controller.signal,
@@ -671,8 +672,8 @@ export class RdapClient {
     }
 
     // Step 2: 构造并尝试 RDAP 查询，支持协议回退
-    // 有些 RDAP 服务器仅支持 HTTPS，有些仅支持 HTTP。
-    // 先尝试配置的协议，失败则试另一种协议。
+    // 优化：如果首次连接因网络错误失败（TypeError/Failed to fetch），
+    // 跳过协议回退（另一协议必同结果），直接进入代理备用，节省10秒。
     const queryPaths = [
       baseUrl.replace(/\/+$/, '/') + 'domain/' + encodeURIComponent(normalizedDomain)
     ];
@@ -690,6 +691,8 @@ export class RdapClient {
     let response = null;
     /** @type {string} */
     let lastUrl = '';
+    /** @type {boolean} */
+    let isNetworkError = false; // 首次失败是否为网络级错误
 
     for (let attempt = 0; attempt < queryPaths.length; attempt++) {
       const queryUrl = queryPaths[attempt];
@@ -698,7 +701,11 @@ export class RdapClient {
         ? (queryUrl.startsWith('https://') ? 'HTTPS' : 'HTTP')
         : '';
 
-      lastUrl = queryUrl;
+      // 若首次是网络错误，跳过协议回退（另一协议必同结果），直接进代理备用
+      if (isProtocolFallback && isNetworkError) {
+        console.warn(`[RdapClient] 首次为网络错误，跳过协议回退: ${normalizedDomain}`);
+        break;
+      }
       if (isProtocolFallback) {
         console.log(`[RdapClient] 协议回退尝试 ${protocolLabel}: ${queryUrl}`);
       } else {
@@ -748,12 +755,15 @@ export class RdapClient {
         break; // 成功，跳出循环
       } catch (error) {
         lastFetchError = error;
+        // 网络级错误（网络不可达/DNS失败/超时）标记跳过后续协议回退
+        if (error.name === 'AbortError' || (error.name === 'TypeError' && error.message.includes('fetch'))) {
+          isNetworkError = true;
+        }
         if (error.name === 'AbortError') {
           console.warn(`[RdapClient] RDAP 查询超时 (${protocolLabel || 'primary'}): ${normalizedDomain}`);
         } else {
           console.warn(`[RdapClient] RDAP 查询失败 (${protocolLabel || 'primary'}): ${normalizedDomain} (${error.message})`);
         }
-        // 继续尝试下一个 URL
       }
     }
 

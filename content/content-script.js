@@ -135,22 +135,25 @@
       // 最多检查5个候选
       var candidatesToCheck = uniqueCandidates.slice(0, 5);
 
-      for (var d = 0; d < candidatesToCheck.length; d++) {
-        var candidate = candidatesToCheck[d];
-        try {
-          var resp = await fetchWithTimeout(candidate.href, { method: 'HEAD' }, 3000);
-          // HTTP状态码 >= 400 或 找不到 → 视为死链
-          if (resp && resp.status >= 400) {
-            deadLinks++;
-            if (deadLinkSamples.length < 5) {
-              deadLinkSamples.push({ href: candidate.href.substring(0, 100), text: candidate.text, status: resp.status });
-            }
-          }
-        } catch (e) {
-          // 网络错误（DNS失败、连接超时等）→ 也视为死链
+      // 并行HEAD请求（原串行for循环改为Promise.allSettled，最坏耗时从15秒降至3秒）
+      var deadCheckPromises = candidatesToCheck.map(function(candidate) {
+        return fetchWithTimeout(candidate.href, { method: 'HEAD' }, 3000)
+          .then(function(resp) { return { candidate: candidate, response: resp, error: null }; })
+          .catch(function(err) { return { candidate: candidate, response: null, error: err }; });
+      });
+      var deadCheckResults = await Promise.allSettled(deadCheckPromises);
+
+      for (var r = 0; r < deadCheckResults.length; r++) {
+        var result = deadCheckResults[r].value;
+        if (result.response && result.response.status >= 400) {
           deadLinks++;
           if (deadLinkSamples.length < 5) {
-            deadLinkSamples.push({ href: candidate.href.substring(0, 100), text: candidate.text, error: 'network_error' });
+            deadLinkSamples.push({ href: result.candidate.href.substring(0, 100), text: result.candidate.text, status: result.response.status });
+          }
+        } else if (result.error) {
+          deadLinks++;
+          if (deadLinkSamples.length < 5) {
+            deadLinkSamples.push({ href: result.candidate.href.substring(0, 100), text: result.candidate.text, error: 'network_error' });
           }
         }
       }
@@ -449,14 +452,29 @@
     });
 
     // 5. 检查 position:fixed bottom:0 的元素（底部固定栏）
+    // 优化：原 querySelectorAll('*') 扫描全部元素+getComputedStyle会触发布局重算。
+    // 改为只扫描 body 最后 500 个元素（ICP备案的固定栏都在页面底部）。
     try {
-      const allElements = document.querySelectorAll('*');
-      for (const el of allElements) {
-        const style = window.getComputedStyle(el);
+      const bodyChildren = document.body ? [...document.body.children] : [];
+      const startScan = Math.max(0, bodyChildren.length - 500); // 最多扫描底部500个
+      for (let si = startScan; si < bodyChildren.length; si++) {
+        // 先快速检查子元素数量，子元素多的容器更可能含底部固定栏
+        const container = bodyChildren[si];
+        if (container.children.length === 0 && !container.classList.length && !container.id) continue;
+        const style = window.getComputedStyle(container);
         if (style.position === 'fixed' &&
             (style.bottom === '0px' || parseInt(style.bottom) < 50)) {
-          const t = (el.textContent || '').trim();
+          const t = (container.textContent || '').trim();
           if (t.length > 5 && t.length < 500) add(t);
+        }
+        // 同时检查容器内的直接子元素
+        for (const child of container.children) {
+          const childStyle = window.getComputedStyle(child);
+          if (childStyle.position === 'fixed' &&
+              (childStyle.bottom === '0px' || parseInt(childStyle.bottom) < 50)) {
+            const t = (child.textContent || '').trim();
+            if (t.length > 5 && t.length < 500) add(t);
+          }
         }
       }
     } catch (e) { /* ignore */ }
