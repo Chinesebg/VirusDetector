@@ -31,6 +31,20 @@
 /** IANA RDAP DNS 引导文件 URL */
 const RDAP_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
 
+/**
+ * RDAP/WHOIS 代理查询服务 URL（备用方案）。
+ *
+ * 用途：
+ *   1. 对没有公开 RDAP 服务的 TLD（如 .cn）作为【主查询】，
+ *      该服务会自动回退到注册局 WHOIS 并返回结构化 JSON。
+ *   2. 对其他 TLD 直连 RDAP 失败（网络/超时/服务器错误）时作为【备用】。
+ *
+ * 返回格式（两种）：
+ *   - WHOIS 路径：{ success, data: { protocol:"whois", whoisData:{ "Created Date", "Expiry Date", ... } } }
+ *   - RDAP 路径：{ success, data: { levels:{ registry:{ ...标准 RDAP 对象... } } } }
+ */
+const RDAP_PROXY_URL = 'https://rdap.ss/api/query?q=';
+
 /** 引导文件缓存有效期（毫秒），24小时。该文件通常每日 UTC 22:00 更新 */
 const BOOTSTRAP_CACHE_TTL = 24 * 60 * 60 * 1000;
 
@@ -421,6 +435,182 @@ function _parseRdapResponse(json, domain) {
   };
 }
 
+// ==================== 代理服务（备用 / .cn 处理） ====================
+
+/**
+ * 将 WHOIS 风格的日期字符串规范化为可被 Date 解析的格式
+ *
+ * 输入示例："2026-05-26 12:02:55" / "2026-05-26T12:02:55Z" / "26-May-2026"
+ * @param {string} raw
+ * @returns {string} ISO 风格字符串，无法识别时原样返回
+ */
+function _normalizeWhoisDate(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  const s = raw.trim();
+  // "YYYY-MM-DD HH:mm:ss" → "YYYY-MM-DDTHH:mm:ssZ"
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}T${m[4]}Z`;
+  // "YYYY-MM-DD" → "YYYY-MM-DDT00:00:00Z"
+  const d = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (d) return `${d[1]}-${d[2]}-${d[3]}T00:00:00Z`;
+  return s;
+}
+
+/**
+ * 从 whoisData 对象中按多个候选键名取值（大小写/别名容错）
+ * @param {Object} data
+ * @param {string[]} keys - 候选键名（按优先级）
+ * @returns {*} 命中的值，未找到返回 undefined
+ */
+function _pickWhoisField(data, keys) {
+  if (!data || typeof data !== 'object') return undefined;
+  // 建立小写键名索引
+  const lowerMap = {};
+  for (const k of Object.keys(data)) lowerMap[k.toLowerCase()] = data[k];
+  for (const key of keys) {
+    const v = lowerMap[key.toLowerCase()];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return undefined;
+}
+
+/**
+ * 解析代理服务的 WHOIS 风格响应（data.whoisData）为 WhoisResult 兼容格式
+ * @param {Object} whoisData - 代理返回的 whoisData 对象
+ * @param {string} domain
+ * @returns {Object}
+ */
+function _parseProxyWhoisData(whoisData, domain) {
+  const creationRaw = _pickWhoisField(whoisData, [
+    'Created Date', 'Creation Date', 'Registration Time', 'Registration Date', 'created'
+  ]);
+  const expiryRaw = _pickWhoisField(whoisData, [
+    'Expiry Date', 'Expiration Date', 'Registry Expiry Date', 'Expiration Time', 'expires'
+  ]);
+  const registrar = _pickWhoisField(whoisData, ['Registrar', 'Sponsoring Registrar', 'registrar']) || '';
+
+  const creationTime = _normalizeWhoisDate(String(creationRaw || ''));
+  const expirationTime = _normalizeWhoisDate(String(expiryRaw || ''));
+
+  const creationDays = _daysFromNow(creationTime);
+  const isExpire = !!(expirationTime && new Date(expirationTime).getTime() < Date.now());
+
+  let validDays = -1;
+  if (expirationTime) {
+    const expDate = new Date(expirationTime);
+    if (!isNaN(expDate.getTime())) {
+      const diffMs = expDate.getTime() - Date.now();
+      validDays = diffMs > 0 ? Math.ceil(diffMs / (1000 * 60 * 60 * 24)) : 0;
+    }
+  }
+
+  // 域名状态（可能是数组或字符串）
+  let domainStatus = _pickWhoisField(whoisData, ['Domain Status', 'status']) || [];
+  if (typeof domainStatus === 'string') domainStatus = [domainStatus];
+  if (!Array.isArray(domainStatus)) domainStatus = [];
+
+  // DNS 服务器（可能是数组或字符串）
+  let nameServer = _pickWhoisField(whoisData, ['Name Server', 'Nameserver', 'nameservers']) || [];
+  if (typeof nameServer === 'string') nameServer = [nameServer];
+  if (!Array.isArray(nameServer)) nameServer = [];
+
+  const parts = domain.split('.');
+  const domainSuffix = parts.length >= 2 ? parts.slice(1).join('.') : (parts[0] || '');
+
+  return {
+    domain,
+    domainSuffix,
+    creationDays,
+    validDays,
+    creationTime,
+    expirationTime,
+    isExpire,
+    registrarName: String(registrar || ''),
+    domainStatus,
+    nameServer: nameServer.map(String),
+    queryTime: new Date().toISOString(),
+    _rdap: { viaProxy: true, protocol: 'whois' }
+  };
+}
+
+/**
+ * 通过代理服务查询域名（备用方案 / .cn 处理）
+ *
+ * @param {string} domain - 规范化后的完整域名
+ * @returns {Promise<Object|null>} WhoisResult 兼容对象，失败返回 null
+ */
+async function _lookupViaProxy(domain) {
+  const queryUrl = `${RDAP_PROXY_URL}${encodeURIComponent(domain)}`;
+  console.log(`[RdapClient] 通过代理服务查询: ${queryUrl}`);
+
+  let response;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), RDAP_REQUEST_TIMEOUT);
+    response = await fetch(queryUrl, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' }
+    });
+    clearTimeout(timeoutId);
+  } catch (error) {
+    _lastError = { domain, phase: error.name === 'AbortError' ? 'timeout' : 'connect',
+      message: `代理服务请求失败: ${error.message}`, url: queryUrl };
+    console.warn(`[RdapClient] 代理服务请求失败: ${domain} (${error.message})`);
+    return null;
+  }
+
+  if (!response.ok) {
+    _lastError = { domain, phase: 'http_status', message: `代理服务返回 HTTP ${response.status}`, url: queryUrl, statusCode: response.status };
+    console.warn(`[RdapClient] 代理服务返回 HTTP ${response.status}: ${domain}`);
+    return null;
+  }
+
+  let json;
+  try {
+    json = await response.json();
+  } catch (e) {
+    _lastError = { domain, phase: 'parse', message: `代理服务 JSON 解析失败: ${e.message}`, url: queryUrl };
+    return null;
+  }
+
+  if (!json || json.success !== true || !json.data) {
+    _lastError = { domain, phase: 'not_found', message: '代理服务未返回有效数据', url: queryUrl };
+    console.warn(`[RdapClient] 代理服务未返回有效数据: ${domain}`);
+    return null;
+  }
+
+  const data = json.data;
+
+  try {
+    // 情况 A：RDAP 路径 → data.levels.registry 是标准 RDAP 对象
+    const rdapObj = data.levels?.registry || data.levels?.registrar;
+    if (rdapObj && rdapObj.objectClassName === 'domain') {
+      const result = _parseRdapResponse(rdapObj, domain);
+      result._rdap = { ...result._rdap, viaProxy: true, protocol: 'rdap' };
+      _lastError = null;
+      console.log(`[RdapClient] 代理服务查询成功 (RDAP): ${domain} (注册: ${result.creationTime || '?'}, 注册商: ${result.registrarName || '?'})`);
+      return result;
+    }
+
+    // 情况 B：WHOIS 路径 → data.whoisData 是结构化键值对象
+    const whoisData = data.whoisData || data.rawData;
+    if (whoisData && typeof whoisData === 'object') {
+      const result = _parseProxyWhoisData(whoisData, domain);
+      _lastError = null;
+      console.log(`[RdapClient] 代理服务查询成功 (WHOIS): ${domain} (注册: ${result.creationTime || '?'}, 注册商: ${result.registrarName || '?'})`);
+      return result;
+    }
+
+    _lastError = { domain, phase: 'parse', message: '代理服务响应格式无法识别', url: queryUrl };
+    console.warn(`[RdapClient] 代理服务响应格式无法识别: ${domain}`);
+    return null;
+  } catch (e) {
+    _lastError = { domain, phase: 'parse', message: `代理服务响应解析失败: ${e.message}`, url: queryUrl };
+    return null;
+  }
+}
+
 // ==================== 公开接口 ====================
 
 export class RdapClient {
@@ -443,14 +633,13 @@ export class RdapClient {
     // Step 1: 获取引导文件，查找 RDAP 服务器 URL
     const { baseUrl, isFallback, noRdap } = await _getRdapBaseUrl(normalizedDomain);
 
-    // 该 TLD 已知没有公开 RDAP 服务（如 .cn）→ 返回「不支持」哨兵结果，优雅降级
+    // 该 TLD 没有公开 RDAP 服务（如 .cn）→ 直接走代理服务（其内部回退到 WHOIS）
     if (noRdap) {
-      _lastError = {
-        domain: normalizedDomain,
-        phase: 'unsupported',
-        message: `该 TLD 没有公开 RDAP 服务，跳过查询`
-      };
-      console.log(`[RdapClient] 跳过查询（无公开 RDAP）: ${normalizedDomain} (TLD: ${normalizedDomain.split('.').pop()})`);
+      console.log(`[RdapClient] 无公开 RDAP，改用代理服务: ${normalizedDomain} (TLD: ${normalizedDomain.split('.').pop()})`);
+      const proxyResult = await _lookupViaProxy(normalizedDomain);
+      if (proxyResult) return proxyResult;
+      // 代理也失败 → 返回「不支持」哨兵结果，优雅降级
+      console.log(`[RdapClient] 代理服务亦失败，降级为不支持: ${normalizedDomain}`);
       return {
         domain: normalizedDomain,
         domainSuffix: normalizedDomain.split('.').slice(1).join('.'),
@@ -463,11 +652,15 @@ export class RdapClient {
       };
     }
 
+    // 引导文件中找不到该 TLD 的 RDAP 服务器 → 尝试代理服务作为备用
     if (!baseUrl) {
+      console.warn(`[RdapClient] 引导文件中未找到 TLD 对应服务器，改用代理服务: ${normalizedDomain}`);
+      const proxyResult = await _lookupViaProxy(normalizedDomain);
+      if (proxyResult) return proxyResult;
       _lastError = {
         domain: normalizedDomain,
         phase: 'bootstrap',
-        message: `引导文件中未找到该域名的 TLD 对应 RDAP 服务器`
+        message: `引导文件中未找到该域名的 TLD 对应 RDAP 服务器，代理服务亦失败`
       };
       console.warn(`[RdapClient] ${_lastError.message}: ${normalizedDomain}`);
       return null;
@@ -545,11 +738,8 @@ export class RdapClient {
             };
           }
 
-          // 非 404 仅在最后一次尝试时返回失败
-          if (attempt === queryPaths.length - 1) {
-            _lastError = { domain: normalizedDomain, phase: 'http_status', message: msg, statusCode: resp.status };
-            return null;
-          }
+          // 非 404 错误：记录错误，继续尝试下一个 URL；全部失败后由代理备用接管
+          _lastError = { domain: normalizedDomain, phase: 'http_status', message: msg, statusCode: resp.status };
           continue;
         }
 
@@ -567,23 +757,23 @@ export class RdapClient {
       }
     }
 
-    // 所有尝试均失败
-    if (lastFetchError) {
-      const error = lastFetchError;
-      if (error.name === 'AbortError') {
-        _lastError = { domain: normalizedDomain, phase: 'timeout', message: `请求超时 (${RDAP_REQUEST_TIMEOUT}ms)` };
-      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
-        _lastError = { domain: normalizedDomain, phase: 'connect', message: `网络连接失败: ${error.message}` };
-      } else {
-        _lastError = { domain: normalizedDomain, phase: 'connect', message: `请求异常: ${error.message}` };
-      }
-      return null;
-    }
-
-    // 检查 response 非空（防御性编程）
+    // 直连 RDAP 失败（网络错误 / 超时 / 非 404 的 HTTP 错误）→ 尝试代理服务备用
     if (!response) {
-      _lastError = { domain: normalizedDomain, phase: 'connect', message: 'RDAP 查询未知错误' };
-      return null;
+      // 记录直连失败的原始错误（供代理也失败时返回）
+      if (lastFetchError) {
+        const error = lastFetchError;
+        if (error.name === 'AbortError') {
+          _lastError = { domain: normalizedDomain, phase: 'timeout', message: `请求超时 (${RDAP_REQUEST_TIMEOUT}ms)` };
+        } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+          _lastError = { domain: normalizedDomain, phase: 'connect', message: `网络连接失败: ${error.message}` };
+        } else {
+          _lastError = { domain: normalizedDomain, phase: 'connect', message: `请求异常: ${error.message}` };
+        }
+      }
+      console.warn(`[RdapClient] 直连 RDAP 失败，改用代理服务备用: ${normalizedDomain}`);
+      const proxyResult = await _lookupViaProxy(normalizedDomain);
+      if (proxyResult) return proxyResult;
+      return null; // 代理也失败，_lastError 已由 _lookupViaProxy 更新
     }
 
     // Step 5: 解析 JSON 响应
@@ -592,6 +782,9 @@ export class RdapClient {
       json = await response.json();
     } catch (e) {
       _lastError = { domain: normalizedDomain, phase: 'parse', message: `JSON 解析失败: ${e.message}`, url: lastUrl };
+      console.warn(`[RdapClient] RDAP 响应解析失败，改用代理服务备用: ${normalizedDomain}`);
+      const proxyResult = await _lookupViaProxy(normalizedDomain);
+      if (proxyResult) return proxyResult;
       return null;
     }
 
@@ -603,6 +796,9 @@ export class RdapClient {
       return result;
     } catch (e) {
       _lastError = { domain: normalizedDomain, phase: 'parse', message: `RDAP 响应解析失败: ${e.message}`, url: lastUrl };
+      console.warn(`[RdapClient] RDAP 响应解析失败，改用代理服务备用: ${normalizedDomain}`);
+      const proxyResult = await _lookupViaProxy(normalizedDomain);
+      if (proxyResult) return proxyResult;
       return null;
     }
   }
