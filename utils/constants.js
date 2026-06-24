@@ -5,7 +5,7 @@
  * 存储键名和缓存策略。所有模块通过 import 共用同一份配置。
  *
  * @module constants
- * @version 2.2.3
+ * @version 2.2.4
  */
 
 // ==================== 评分体系 ====================
@@ -172,8 +172,14 @@ export const CACHE_TTL = 24 * 60 * 60 * 1000;  // 24小时
 /** RDAP IANA 引导文件 URL（TLD → RDAP 服务器映射） */
 export const RDAP_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
 
-/** RDAP 查询结果缓存有效期（毫秒），24小时 */
+/** WhoisCX API 基础 URL（Whois 回退查询） */
+export const WHOIS_API_URL = 'http://api.whoiscx.com/whois/';
+
+/** RDAP 查询结果缓存有效期（毫秒），24小时。缓存由 WhoisClient 共享管理 */
 export const WHOIS_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+/** WhoisCX API 请求超时（毫秒） */
+export const WHOIS_API_TIMEOUT = 8000;
 
 /** RDAP 客户端请求超时（毫秒） */
 export const RDAP_REQUEST_TIMEOUT = 10000;
