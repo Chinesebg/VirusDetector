@@ -168,15 +168,15 @@ export const STORAGE_KEYS = {
 // 缓存有效期（毫秒）
 export const CACHE_TTL = 24 * 60 * 60 * 1000;  // 24小时
 
-// ==================== Whois API 配置 ====================
-/** WhoisCX 免费 API 接口地址 */
-export const WHOIS_API_URL = 'http://api.whoiscx.com/whois/';
+// ==================== RDAP / Whois API 配置 ====================
+/** RDAP IANA 引导文件 URL（TLD → RDAP 服务器映射） */
+export const RDAP_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
 
-/** Whois 查询结果缓存有效期（毫秒），24小时 */
+/** RDAP 查询结果缓存有效期（毫秒），24小时 */
 export const WHOIS_CACHE_TTL = 24 * 60 * 60 * 1000;
 
-/** Whois API 请求超时（毫秒） */
-export const WHOIS_API_TIMEOUT = 8000;
+/** RDAP 客户端请求超时（毫秒） */
+export const RDAP_REQUEST_TIMEOUT = 10000;
 
 // ==================== 域名注册时间评分规则 ====================
 /**
