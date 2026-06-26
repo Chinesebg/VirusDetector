@@ -82,8 +82,41 @@
 
   // 返回安全页面：先关闭所有危险标签页，再打开正确官网，最后关闭警告弹窗
   document.getElementById('btn-back-safe').addEventListener('click', async () => {
+    clearAutoClose();
     await closeDangerousTabs(domain);
     await openSafePage(correctUrl || 'https://www.baidu.com');
     window.close();
   });
+
+  // ---- 自动关闭 ----
+
+  // 30 秒倒计时后自动关闭警告弹窗，用户点击任意按钮则取消倒计时
+  const AUTO_CLOSE_SECONDS = 30;
+  let remaining = AUTO_CLOSE_SECONDS;
+  const countdownEl = document.getElementById('auto-close-countdown');
+
+  function renderCountdown() {
+    if (countdownEl) {
+      countdownEl.textContent = `本提示将在 ${remaining} 秒后自动关闭`;
+    }
+  }
+
+  function clearAutoClose() {
+    clearInterval(autoCloseTimer);
+    if (countdownEl) countdownEl.textContent = '';
+  }
+
+  renderCountdown();
+  const autoCloseTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearAutoClose();
+      window.close();
+      return;
+    }
+    renderCountdown();
+  }, 1000);
+
+  // 关闭按钮也取消倒计时（事件已绑定，补充清理）
+  document.getElementById('btn-close').addEventListener('click', clearAutoClose);
 })();
