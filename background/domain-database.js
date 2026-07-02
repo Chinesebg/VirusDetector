@@ -534,8 +534,8 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'Kimi',
-    officialDomains: ['kimi.moonshot.cn'],
-    correctUrl: 'https://kimi.moonshot.cn',
+    officialDomains: ['kimi.moonshot.cn','kimi.com'],
+    correctUrl: 'https://www.kimi.com',
     category: SOFTWARE_CATEGORIES.AI_CHAT,
     keywords: ['Kimi', 'kimi', 'moonshot'],
     isChineseBrand: true
@@ -800,6 +800,14 @@ const DOMAIN_DATABASE = [
     keywords: ['V2EX', 'v2ex'],
     isChineseBrand: false
   },
+  {
+    name: 'Github',
+    officialDomains: ['github.com'],
+    correctUrl: 'https://www.github.com',
+    category: SOFTWARE_CATEGORIES.DEVELOPER,
+    keywords: ['Github'],
+    isChineseBrand: false
+  },
 
   // ========== 系统工具 ==========
   {
@@ -856,14 +864,6 @@ const DOMAIN_DATABASE = [
     correctUrl: 'https://anydesk.com',
     category: SOFTWARE_CATEGORIES.SYSTEM_TOOL,
     keywords: ['AnyDesk', 'anydesk', '远程桌面'],
-    isChineseBrand: false
-  },
-  {
-    name: 'Github',
-    officialDomains: ['github.com'],
-    correctUrl: 'https://www.github.com',
-    category: SOFTWARE_CATEGORIES.DEVELOPER,
-    keywords: ['Github'],
     isChineseBrand: false
   },
 
@@ -1008,8 +1008,8 @@ const DOMAIN_DATABASE = [
   },
   {
     name: 'AK加速器',
-    officialDomains: ['akjsq.com', 'ak加速器.com'],
-    correctUrl: 'https://www.akjsq.com',
+    officialDomains: ['akspeedy.com', 'ak加速器.com'],
+    correctUrl: 'https://www.akspeedy.com',
     category: SOFTWARE_CATEGORIES.GAME_ACCELERATOR,
     keywords: ['AK加速器', 'akjsq'],
     isChineseBrand: true
