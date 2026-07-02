@@ -58,7 +58,19 @@ const _FALLBACK_TLD = new Set([
 function getPublicSuffix(hostname) {
   // 1. DNS 缓存命中（由 refreshPublicSuffixDNS 异步填充）
   const cached = _pslCache.get(hostname);
-  if (cached) return cached;
+  // 二次验证：缓存的 suffix 必须是 hostname 的有效后缀，防止无效数据污染
+  if (cached && (hostname.endsWith('.' + cached) || hostname === cached)) {
+    // 额外验证：缓存的后缀必须能让 extractRegistrableDomain 提取出比 hostname 更短的域名
+    // 防止多级公共后缀（如 github.io、herokuapp.com）导致可注册域名等于原始域名，
+    // 使后续 WHOIS/RDAP 查询失败（GitHub Pages 子域名没有独立注册信息）
+    const cachedParts = cached.split('.');
+    const hostParts = hostname.split('.');
+    if (cachedParts.length < hostParts.length - 1) {
+      return cached;
+    }
+    // 若后缀长度 >= hostname-1，则 registrable = hostname，对 WHOIS 无意义
+    // 回退到 fallback（不淘汰缓存，不影响未来的查询策略变化）
+  }
 
   // 2. 回退匹配：从最右段开始逐级向左扩展，找到 PSL 中最长的连续匹配
   //    例如 xxx.com.cn: cn✓ → com.cn✗(不在回退集) → 返回 cn
@@ -141,7 +153,28 @@ export async function refreshPublicSuffixDNS(hostname) {
     const raw = json.Answer[0].data;
     if (!raw || typeof raw !== 'string') return null;
 
-    const suffix = raw.replace(/\.$/, '');
+    // publicsuffix.zone PTR 响应返回的是完整路径（如 "xyz.query.publicsuffix.zone."），
+    // 需要剥离 ".query.publicsuffix.zone" 得到纯后缀（如 "xyz"）
+    let suffix = raw.replace(/\.$/, '');
+    if (suffix.endsWith('.query.publicsuffix.zone')) {
+      suffix = suffix.replace(/\.query\.publicsuffix\.zone$/, '');
+    }
+
+    // 验证：后缀必须是 hostname 的合法后缀，防止无效数据污染缓存
+    if (!hostname.endsWith('.' + suffix) && hostname !== suffix) {
+      console.warn(`[UrlUtils] DoH PSL 返回无效后缀 "${suffix}" for ${hostname}，忽略`);
+      return null;
+    }
+
+    // 验证：缓存后缀必须能让 extractRegistrableDomain 提取出比 hostname 更短的域名
+    // 防止多级公共后缀（如 github.io）投毒缓存，导致查询结果不一致
+    const _suffixParts = suffix.split('.');
+    const _hostParts = hostname.split('.');
+    if (_suffixParts.length >= _hostParts.length - 1) {
+      console.log(`[UrlUtils] DoH PSL suffix "${suffix}" for ${hostname} 不会缩短域名，跳过缓存`);
+      return suffix;
+    }
+
     _pslCache.set(hostname, suffix);
     console.log(`[UrlUtils] DNS PSL cache updated: ${hostname} -> "${suffix}"`);
     return suffix;

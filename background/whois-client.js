@@ -130,6 +130,73 @@ function _parseDaysFromWhoisCxTime(timeStr) {
   }
 }
 
+// ==================== 父域名回退查询（防御加固）====================
+
+/**
+ * 当标准查询路径失败时，逐级向上回退父域名。
+ * 处理多级公共后缀子域名（如 a.b.github.io）等，
+ * 子域名没有独立 WHOIS 记录时回退到父域名的注册信息。
+ *
+ * @param {string} failedDomain - 已查询失败的标准域名
+ * @returns {Promise<WhoisResult|null>}
+ */
+async function _lookupParentDomains(failedDomain) {
+  const parts = failedDomain.split('.');
+  // 至少保留两级才能视为域名（如 example.com）
+  if (parts.length <= 2) return null;
+
+  console.log(`[WhoisClient] 尝试父域名回退: ${failedDomain}`);
+  for (let i = 1; i < parts.length - 1; i++) {
+    const parentDomain = parts.slice(i).join('.');
+    if (!parentDomain.includes('.')) continue;
+
+    // 先查 WhoisClient 缓存
+    const cached = _cache.get(parentDomain);
+    if (cached && (Date.now() - cached.timestamp) < WHOIS_CACHE_TTL) {
+      console.log(`[WhoisClient] 父域名缓存命中: ${parentDomain}`);
+      return cached.result;
+    }
+
+    // 尝试 RDAP 查询父域名
+    console.log(`[WhoisClient] 回退 RDAP 查询父域名: ${parentDomain}`);
+    const rdapResult = await RdapClient.lookup(parentDomain);
+    if (rdapResult && !rdapResult._rdap?.unsupported && !rdapResult._rdap?.notFound) {
+      const result = {
+        domain: rdapResult.domain || parentDomain,
+        domainSuffix: rdapResult.domainSuffix || '',
+        creationDays: rdapResult.creationDays,
+        validDays: rdapResult.validDays,
+        creationTime: rdapResult.creationTime || '',
+        expirationTime: rdapResult.expirationTime || '',
+        isExpire: rdapResult.isExpire || false,
+        registrarName: rdapResult.registrarName || '',
+        domainStatus: rdapResult.domainStatus || [],
+        nameServer: rdapResult.nameServer || [],
+        queryTime: rdapResult.queryTime || new Date().toISOString()
+      };
+      if (result.creationDays > 0) {
+        _cache.set(parentDomain, { result, timestamp: Date.now() });
+      }
+      console.log(`[WhoisClient] 父域名 RDAP 查询成功: ${parentDomain} (注册 ${result.creationDays}d)`);
+      return result;
+    }
+
+    // 尝试 WhoisCX 查询父域名
+    console.log(`[WhoisClient] 回退 WhoisCX 查询父域名: ${parentDomain}`);
+    const whoisResult = await _lookupViaWhoisCx(parentDomain);
+    if (whoisResult) {
+      if (whoisResult.creationDays > 0) {
+        _cache.set(parentDomain, { result: whoisResult, timestamp: Date.now() });
+      }
+      console.log(`[WhoisClient] 父域名 WhoisCX 查询成功: ${parentDomain} (注册 ${whoisResult.creationDays}d)`);
+      return whoisResult;
+    }
+  }
+
+  console.warn(`[WhoisClient] 父域名回退完全失败: ${failedDomain}`);
+  return null;
+}
+
 // ==================== WhoisCX API 回退查询 ====================
 
 /**
@@ -185,15 +252,26 @@ async function _lookupViaWhoisCx(normalizedDomain) {
     return null;
   }
 
+  // 一次性读取响应体，避免多次 clone
+  let responseText = '';
+  try { responseText = await response.clone().text(); } catch (e) { /* ignore */ }
+
+  // 检查是否为 HTML（WhoisCX API 可能已废弃）
+  const trimmed = responseText.trim();
+  if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html')) {
+    _recordError(normalizedDomain, 'parse',
+      'WhoisCX API 可能已废弃（返回 HTML 而非 JSON），建议移除或替换此回退路径',
+      { url, responseBody: responseText.substring(0, 200) });
+    return null;
+  }
+
   let json;
   try {
-    json = await response.json();
+    json = JSON.parse(responseText);
   } catch (parseError) {
-    let responseBody = '';
-    try { responseBody = await response.clone().text(); } catch (e) { /* ignore */ }
     _recordError(normalizedDomain, 'parse',
       `WhoisCX JSON 解析失败: ${parseError.message}`,
-      { url, responseBody: responseBody.substring(0, 500) });
+      { url, responseBody: responseText.substring(0, 500) });
     return null;
   }
 
@@ -356,7 +434,11 @@ export class WhoisClient {
       return whoisResult;
     }
 
-    // 8. 两条路径均失败
+    // 8. 两条路径均失败 → 尝试逐级向上回退父域名
+    //    处理多级公共后缀子域名（如 a.b.github.io 等），逐级剥离标签查找父域名的注册信息
+    const fallbackResult = await _lookupParentDomains(normalizedDomain);
+    if (fallbackResult) return fallbackResult;
+
     console.error(`[WhoisClient] RDAP 和 WhoisCX 均查询失败: ${normalizedDomain}`);
     return null;
   }
