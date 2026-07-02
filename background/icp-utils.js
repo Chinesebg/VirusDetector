@@ -54,11 +54,16 @@ const ICP_EXEMPT_DOMAINS = new Set([
   'heroku.com', 'herokuapp.com',
   'cloudflare.com', 'cloudflarepages.dev',
   'firebase.google.com', 'firebaseapp.com',
+  'jetbrains.com',
+
+  // —— 科研 ——
+  'mathworks.com',
 
   // —— 百科 / 知识 ——
   'wikipedia.org', 'wikimedia.org', 'wikiwand.com',
   'mozilla.org', 'developer.mozilla.org',
   'w3.org', 'w3schools.com',
+  'vndb.org',
 
   // —— 非中国软件 / 工具 ——
   'firefox.com',
@@ -101,6 +106,7 @@ const ICP_EXEMPT_DOMAINS = new Set([
   'nintendo.com',
   'playstation.com',
   'xbox.com',
+  'dlsite.com',
 
   // —— 云服务 / SaaS ——
   'dropbox.com', 'dropboxusercontent.com',
@@ -120,6 +126,8 @@ const ICP_EXEMPT_DOMAINS = new Set([
   'sendgrid.net',
   'twilio.com',
   'stripe.com',
+  'vultr.com',
+  'cloudcone.com',
 
   // —— AI / 研究 ——
   'openai.com', 'chatgpt.com',
@@ -157,6 +165,44 @@ const ICP_EXEMPT_DOMAINS = new Set([
   'proton.me', 'protonmail.com',
   'mega.nz', 'mega.io',
   'mediafire.com',
+
+  // —— 教育机构（全局匹配 .edu / .edu.cn / .edu.jp 等）——
+  'edu',
+  'edu.cn',
+  'edu.jp',
+  'ac.jp',        // 日本学术机构（如 u-tokyo.ac.jp）
+  'ac.cn',        // 中国科研机构（如 cas.ac.cn）
+  'ac.kr',        // 韩国学术机构
+  'ac.uk',        // 英国学术机构
+  'ac.th',        // 泰国学术机构
+
+  // —— 政府机构（全局匹配 .gov / .gov.cn 等）——
+  'gov',
+  'gov.cn',
+  'gov.hk',
+  'gov.tw',
+  'go.jp',        // 日本政府
+  'go.kr',        // 韩国政府
+  'gov.uk',       // 英国政府
+  'gov.au',       // 澳大利亚政府
+  'gov.sg',       // 新加坡政府
+
+  // —— 保留/专用域名（不暴露公网，无需 ICP 备案）——
+  // 本地/内网专用（RFC 6761/6762/8375，不暴露公网）
+  'local',         // RFC 6762: 局域网 mDNS（打印机/NAS/树莓派）
+  'localhost',     // RFC 6761: 本机回环（127.0.0.1）
+  'home.arpa',     // RFC 8375: 家庭内网
+  'internal',      // ICANN 保留: 企业内部网络
+  'test',          // RFC 6761: 开发测试
+  // 文档/示例专用（RFC 2606/6761，禁止实际使用）
+  'example',       // RFC 6761: 文档示例（www.example.com）
+  'example.com',   // RFC 2606: 通用示例域名
+  'example.net',   // RFC 2606: 通用示例域名
+  'example.org',   // RFC 2606: 通用示例域名
+  // 反向解析与基础架构
+  'arpa',          // 根域: DNS 基础设施
+  'in-addr.arpa',  // RFC 1035: IPv4 反向解析
+  'ip6.arpa',      // RFC 3596: IPv6 反向解析
 ]);
 
 /**
