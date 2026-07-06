@@ -4,7 +4,6 @@
  * 是整个扩展的中央调度模块，负责协调所有后台任务：
  *
  * @module service-worker
- * @version 2.4.0-alpha.1
  *
  * 核心职责：
  *   1. 页面导航监听 → 白名单检查 → 缓存查询 → 触发评分分析
@@ -29,7 +28,8 @@ import { registerNonChineseBrandDomains } from './icp-utils.js';
 import { UrlUtils } from '../utils/url-utils.js';
 import {
   SCORE_THRESHOLD, DOWNLOAD_CONFIRM_THRESHOLD, RISK_LEVEL, MSG_TYPES,
-  STORAGE_KEYS, CACHE_TTL, DETECT_NON_ARCHIVE_FILES_DEFAULT
+  STORAGE_KEYS, CACHE_TTL, DETECT_NON_ARCHIVE_FILES_DEFAULT,
+  VERSION
 } from '../utils/constants.js';
 
 // ==================== URL 协议守卫 ====================
@@ -767,7 +767,8 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
   const domain = UrlUtils.extractHostname(url);
   let tabState = await loadTabState(tabId);
   tabState.url = url; tabState.domain = domain;
-  tabState.downloadState = tabState.downloadState || { hasDownloadedArchive: false };
+  // 导航到新页面时重置下载状态，避免旧页面的下载事件污染新页面的检测
+  tabState.downloadState = { hasDownloadedArchive: false, archiveFileName: null };
   tabState.isAnalyzed = false;
   await saveTabState(tabId, tabState);
 
@@ -836,6 +837,18 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     if (tabState.isWhitelisted) {
       console.log('[ServiceWorker] 白名单网站，跳过下载检测:', tabState.domain);
       return;
+    }
+
+    // 官方网站检查：域名+ICP 均通过检测的官网不拦截下载
+    if (tabState.isAnalyzed) {
+      const r1 = tabState.ruleResults && tabState.ruleResults.rule1;
+      const r3 = tabState.ruleResults && tabState.ruleResults.rule3;
+      if (r1 && r3 &&
+          !r1.triggered && r1.status === 'pass' &&
+          !r3.triggered && r3.status === 'pass') {
+        console.log('[ServiceWorker] 官方网站，跳过下载检测:', tabState.domain);
+        return;
+      }
     }
 
     // 更新下载状态
@@ -1264,4 +1277,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-console.log('[ServiceWorker] ✅ 银狐木马检测扩展 v2.4.0-alpha.1 已就绪');
+console.log(`[ServiceWorker] ✅ 银狐木马检测扩展 v${VERSION} 已就绪`);
