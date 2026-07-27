@@ -29,6 +29,7 @@ import { ResourceResolver } from './resource-resolver/index.js';
 import { registerNonChineseBrandDomains, IcpUtils } from './icp-utils.js';
 import { IcpApiClient } from './icp-api.js';
 import { UrlUtils } from '../utils/url-utils.js';
+import { isFullyTrusted } from '../utils/exemptions/index.js';
 import {
   SCORE_THRESHOLD, DOWNLOAD_CONFIRM_THRESHOLD, RISK_LEVEL, MSG_TYPES,
   STORAGE_KEYS, CACHE_TTL, DETECT_NON_ARCHIVE_FILES_DEFAULT,
@@ -1082,6 +1083,19 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
     return;
   }
 
+  // 完全信任域名检查：政府/教育机构域名（.gov.cn / .edu.cn 等）跳过所有检测
+  if (isFullyTrusted(domain)) {
+    console.log('[ServiceWorker] 完全信任域名，跳过所有检测:', domain);
+    tabState.isAnalyzed = true;
+    tabState.url = url;
+    tabState.domain = domain;
+    tabState.score = 0;
+    tabState.riskLevel = RISK_LEVEL.SAFE;
+    await saveTabState(tabId, tabState);
+    setIconGreen(tabId, 0);
+    return;
+  }
+
   tabState.isWhitelisted = false;
 
   // 站点黑名单检查：如果在站点黑名单中，直接赋予高分触发警告流程
@@ -1629,6 +1643,17 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
     return;
   }
 
+  // 完全信任域名检查：政府/教育机构域名（.gov.cn / .edu.cn 等）跳过所有检测
+  if (isFullyTrusted(domain)) {
+    tabState.isAnalyzed = true;
+    tabState.score = 0;
+    tabState.riskLevel = RISK_LEVEL.SAFE;
+    await saveTabState(tabId, tabState);
+    setIconGreen(tabId, 0);
+    console.log('[ServiceWorker] 完全信任域名，跳过检测:', domain);
+    return;
+  }
+
   // 启动分析（异步，不阻塞导航事件）
   analyzePage(tabId, url, domain, null, null).catch(e =>
     console.error('[ServiceWorker] analyzePage error:', e));
@@ -1681,6 +1706,12 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     // 白名单检查：白名单中的网站不拦截下载
     if (tabState.isWhitelisted) {
       console.log('[ServiceWorker] 白名单网站，跳过下载检测:', tabState.domain);
+      return;
+    }
+
+    // 完全信任域名检查：政府/教育机构域名不拦截下载
+    if (isFullyTrusted(tabState.domain)) {
+      console.log('[ServiceWorker] 完全信任域名，跳过下载检测:', tabState.domain);
       return;
     }
 
