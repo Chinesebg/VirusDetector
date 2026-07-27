@@ -1467,13 +1467,6 @@ class SettingsApp {
               </button>
            </div>
             <div id="update-status">加载中...</div>
-            <div class="list-actions" style="margin-top:8px;">
-              
-              <a id="download-update-btn" class="btn btn-primary" style="display:none;" href="#" target="_blank" rel="noopener">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                前往下载
-              </a>
-            </div>
           </div>
           <div class="about-card">
             <h3>

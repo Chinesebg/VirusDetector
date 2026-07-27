@@ -988,14 +988,6 @@ const DOMAIN_DATABASE = [
     isChineseBrand: true
   },
   {
-    name: '夜神模拟器',
-    officialDomains: ['yeshen.com', 'bignox.com'],
-    correctUrl: 'https://www.yeshen.com',
-    category: SOFTWARE_CATEGORIES.SIMULATOR,
-    keywords: ['夜神模拟器', '夜神', 'Nox', 'nox', 'NoxPlayer'],
-    isChineseBrand: true
-  },
-  {
     name: '逍遥模拟器',
     officialDomains: ['memuplay.com', 'xyaz.cn'],
     correctUrl: 'https://www.memuplay.com',
