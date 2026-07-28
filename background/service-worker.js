@@ -1560,17 +1560,16 @@ async function _applyIcpUpdate(snapshot, icpApi) {
  */
 async function _postReportToWorker(reportType, domain, note) {
   try {
-    // 收集当前标签页的检测详情（用于丰富 Issue body）
+    // Public GitHub Issues must not include page URLs. The Worker renders rule
+    // results from an allowlist of non-sensitive fields before publishing them.
     let score = 0;
     let ruleResults = null;
-    let pageUrl = '';
     try {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tabs.length > 0) {
         const ts = await loadTabState(tabs[0].id);
         score = ts.score || 0;
         ruleResults = ts.ruleResults || null;
-        pageUrl = ts.url || tabs[0].url || '';
       }
     } catch (e) { /* 获取 tabState 失败，使用默认值 */ }
 
@@ -1581,8 +1580,7 @@ async function _postReportToWorker(reportType, domain, note) {
       version: VERSION,
       timestamp: Date.now(),
       note: note || '',
-      ruleResults,
-      url: pageUrl
+      ruleResults
     };
 
     const response = await fetch(REPORT_API_URL, {

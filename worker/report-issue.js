@@ -14,7 +14,7 @@
  * API：
  *   POST /api/report
  *   Content-Type: application/json
- *   Body: { reportType, domain, score, version, timestamp, note, ruleResults, url }
+ *   Body: { reportType, domain, score, version, timestamp, note, ruleResults }
  *   Response: { success: true, issueUrl: "https://github.com/.../issues/123" }
  *
  *   GET /api/version
@@ -38,6 +38,17 @@ const VERSION_CACHE_TTL_MS = 60 * 60 * 1000;
 const LABEL_MAP = {
   'false_positive': ['false-positive', '用户上报'],
   'confirmed_phish': ['confirmed-phish', '用户上报']
+};
+
+const REPORT_RULES = {
+  rule1: '域名仿冒',
+  rule2: '下载检测',
+  rule3: 'ICP备案',
+  rule4: '链接分析',
+  rule5: '代码工程化',
+  domainAge: '域名年龄',
+  ageBonus: '域名减分',
+  downloadLink: '下载链接'
 };
 
 // ---- 环境变量校验 ----
@@ -193,9 +204,9 @@ function buildTitle(reportType, domain) {
 }
 
 // ---- 构建 Issue Body ----
-function buildBody(data) {
+export function buildBody(data) {
   const {
-    reportType, domain, score, version, timestamp, note, ruleResults, url
+    reportType, domain, score, version, timestamp, note, ruleResults
   } = data;
 
   const typeLabel = reportType === 'false_positive' ? '误报' : '确认钓鱼';
@@ -207,28 +218,12 @@ function buildBody(data) {
   body += `| 字段 | 值 |\n|------|----|\n`;
   body += `| 类型 | ${typeLabel} |\n`;
   body += `| 域名 | \`${domain}\` |\n`;
-  if (url) body += `| 页面URL | ${url} |\n`;
   body += `| 风险评分 | ${score ?? '未知'} |\n`;
   body += `| 版本 | ${version ?? '未知'} |\n`;
   body += `| 时间 | ${timeStr} |\n`;
 
-  // 检测详情
-  if (ruleResults) {
-    body += '\n## 检测详情\n\n';
-    body += '| 规则 | 结果 | 得分 |\n|------|------|------|\n';
-    const ruleNames = {
-      rule1: '域名仿冒', rule2: '下载检测', rule3: 'ICP备案',
-      rule4: '链接分析', rule5: '代码工程化',
-      domainAge: '域名年龄', ageBonus: '域名减分', downloadLink: '下载链接'
-    };
-    for (const [key, label] of Object.entries(ruleNames)) {
-      const rule = ruleResults[key];
-      if (!rule) continue;
-      const result = rule.detailCN || rule.detail || '-';
-      const score = rule.score != null ? (rule.score > 0 ? `+${rule.score}` : rule.score) : '-';
-      body += `| ${label} | ${result} | ${score} |\n`;
-    }
-  }
+  const ruleDetails = buildSafeRuleDetails(ruleResults);
+  if (ruleDetails) body += ruleDetails;
 
   // 用户备注
   if (note) {
@@ -239,6 +234,31 @@ function buildBody(data) {
   body += `<sub>🤖 由 Virus Detector 扩展自动上报 | v${version || '?'}</sub>\n`;
 
   return body;
+}
+
+function buildSafeRuleDetails(ruleResults) {
+  if (!ruleResults || typeof ruleResults !== 'object') return '';
+
+  let rows = '';
+  for (const [key, label] of Object.entries(REPORT_RULES)) {
+    const rule = ruleResults[key];
+    if (!rule || typeof rule !== 'object') continue;
+
+    const score = Number.isFinite(rule.score)
+      ? (rule.score > 0 ? `+${rule.score}` : String(rule.score))
+      : '-';
+    let result = rule.status === 'disabled'
+      ? '已关闭'
+      : (rule.triggered === true ? '已触发' : '未触发');
+
+    if (key === 'domainAge' && Number.isSafeInteger(rule.creationDays) && rule.creationDays >= 0) {
+      result = `已注册 ${rule.creationDays} 天`;
+    }
+
+    rows += `| ${label} | ${result} | ${score} |\n`;
+  }
+
+  return rows ? `\n## 检测详情\n\n| 规则 | 结果 | 得分 |\n|------|------|------|\n${rows}` : '';
 }
 
 // ---- 调用 GitHub Issues API ----
