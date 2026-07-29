@@ -28,8 +28,9 @@ import { SiteBlacklist } from './site-blacklist.js';
 import { ResourceResolver } from './resource-resolver/index.js';
 import { registerNonChineseBrandDomains, IcpUtils } from './icp-utils.js';
 import { IcpApiClient } from './icp-api.js';
+import { WhoisClient } from './whois-client.js';
 import { UrlUtils } from '../utils/url-utils.js';
-import { isFullyTrusted } from '../utils/exemptions/index.js';
+import { isFullyTrusted } from '../utils/exemptions/fully-trusted.js';
 import {
   SCORE_THRESHOLD, DOWNLOAD_CONFIRM_THRESHOLD, RISK_LEVEL, MSG_TYPES,
   STORAGE_KEYS, CACHE_TTL, DETECT_NON_ARCHIVE_FILES_DEFAULT,
@@ -424,6 +425,51 @@ function resetIcon(tabId) {
 function setIconWhitelist(tabId) {
   chrome.action.setBadgeText({ tabId, text: '✓' }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ tabId, color: '#2196F3' }).catch(() => {});
+}
+
+/** 预评估状态：清除徽章（等待 Gate 判定中） */
+function setIconNeutral(tabId) {
+  chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+}
+
+// ==================== Gate 超时管理 ====================
+
+/** Gate 等待超时（Content Script 最长等待时间） */
+const GATE_TIMEOUT_MS = 8000;
+
+/** 活跃的 Gate 超时定时器：tabId → setTimeout id */
+const _gateTimeouts = new Map();
+
+/** 预评估阶段的 Whois Promise（内存缓存，不可序列化到 storage）：tabId → Promise */
+const _whoisPromises = new Map();
+
+function scheduleGateTimeout(tabId, domain) {
+  // 先清除已有超时
+  cancelGateTimeout(tabId);
+  const timerId = setTimeout(async () => {
+    _gateTimeouts.delete(tabId);
+    try {
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (!tab || !tab.url) return;
+      // 超时降级：按 Gate 失败处理
+      const tabState = await loadTabState(tabId);
+      if (tabState._gatePhase !== 'preliminary') return; // 已经处理过了
+      console.log('[ServiceWorker] Gate 超时（Content Script 未响应），按 Gate 失败降级:', domain);
+      tabState._gatePhase = 'resolved';
+      tabState._needsDetection = false;
+      await saveTabState(tabId, tabState);
+      setIconGreen(tabId, 0);
+    } catch (e) { /* 标签页已关闭 */ }
+  }, GATE_TIMEOUT_MS);
+  _gateTimeouts.set(tabId, timerId);
+}
+
+function cancelGateTimeout(tabId) {
+  const existing = _gateTimeouts.get(tabId);
+  if (existing) {
+    clearTimeout(existing);
+    _gateTimeouts.delete(tabId);
+  }
 }
 
 // ==================== 白名单管理 ====================
@@ -1132,7 +1178,7 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
   // 是否有来自 Content Script 的新数据
   const hasFreshData = !!(pageMetrics || linkMetrics);
 
-  // 缓存检查（仅当无新数据时才使用缓存，避免用不含规则四/五的结果拦截更新）
+  // ==================== Gate 预评估阶段（无 Content Script 数据） ====================
   if (!hasFreshData) {
     const cached = await CacheManager.get(domain);
     if (cached) {
@@ -1156,27 +1202,123 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
       }
       return;
     }
+
+    // 无缓存 + 无 Content Script 数据 → 预评估阶段
+    // 仅运行 Rule 1（域名仿冒）+ 发起 Whois 查询（异步不等待）
+    console.log('[ServiceWorker] Gate 预评估阶段（等待 Content Script 数据）:', domain);
+    const rule1Result = ScoringEngine.evaluateRule1Only(domain);
+    const whoisPromise = WhoisClient.lookup(domain).catch(() => null);
+
+    tabState._gatePhase = 'preliminary';
+    tabState._rule1Result = rule1Result;
+    tabState._preliminaryScore = rule1Result.score;
+    tabState.url = url;
+    tabState.domain = domain;
+    tabState.ruleResults = { rule1: rule1Result };
+    tabState.lastAnalyzed = Date.now();
+    // Promise 不可序列化到 storage，存入内存 Map
+    _whoisPromises.set(tabId, whoisPromise);
+    await saveTabState(tabId, tabState);
+
+    setIconNeutral(tabId);
+    scheduleGateTimeout(tabId, domain);
+    return;
   }
 
-  // 构建页面上下文（不再需要SSL检测）
-  // Resource Resolver：从 resourceData 构建 ResourceGraph（L0 检测，异步不阻塞）
+  // ==================== Gate 权威阶段（有 Content Script 数据） ====================
+  cancelGateTimeout(tabId);
+  tabState._gatePhase = 'resolved';
+
+  // 读取 Gate 判定结果（Content Script 计算，零新增常量）
+  let needsDetection = !!(tabState._needsDetection);
+
+  // P3: Resource Resolver 覆盖 Gate — 若发现隐藏归档链接，强制视为需要检测
   let resourceGraph = null;
   const resourceData = tabState._resourceData || null;
   if (resourceData) {
     try {
       resourceGraph = await ResourceResolver.resolve(url || tabState.url, resourceData);
-      // 缓存到 tabState 供下载事件等后续使用
       tabState._resourceGraph = resourceGraph;
+      if (!needsDetection && resourceGraph && resourceGraph.discoveredArchives &&
+          resourceGraph.discoveredArchives.length > 0) {
+        console.log('[ServiceWorker] ResourceResolver 发现隐藏归档链接，Gate 覆盖为通过:', domain);
+        needsDetection = true;
+      }
     } catch (e) {
       console.warn('[ServiceWorker] ResourceResolver 解析失败（不影响检测）:', e.message);
-      resourceGraph = null;
     }
   }
 
-  // ─── ICP 备案 API 核验已改为异步（见 _launchAsyncIcpCheck）───
-  // 同步阶段仅依赖页面文本扫描给出规则三评分，避免 API 网络延迟（最长 16s）
-  // 拖慢整站检测。API 核验结果通过异步回调增量修正评分。
   const settings = await getSettings();
+
+  // ==================== Gate 失败：仅 Rule 1 + Whois，分数上限 70 ====================
+  if (!needsDetection) {
+    console.log('[ServiceWorker] Gate 未通过，跳过完整检测:', domain);
+
+    // 合并预评估阶段的 Rule 1 结果
+    const rule1Result = tabState._rule1Result || ScoringEngine.evaluateRule1Only(domain);
+    const savedWhoisPromise = _whoisPromises.get(tabId);
+    const whoisResult = await (savedWhoisPromise || WhoisClient.lookup(domain).catch(() => null));
+    _whoisPromises.delete(tabId);
+
+    // 复用评分引擎的域名年龄计算（不重复写 S 衰减公式）
+    const syncDomainAgeResult = {
+      score: 0, triggered: false, status: 'pass',
+      detail: '', detailCN: '域名年龄: 等待查询',
+      creationDays: (whoisResult && whoisResult.creationDays >= 0) ? whoisResult.creationDays : -1
+    };
+    const domainAgePart = await ScoringEngine.evaluateDomainAgePart(
+      domain, rule1Result.score, syncDomainAgeResult, false, settings
+    );
+
+    // 域名年龄不受 Gate 影响，完整贡献分数（无上限）
+    const finalScore = Math.max(0, rule1Result.score +
+      domainAgePart.domainAgeResult.score + domainAgePart.ageBonusResult.score);
+
+    const threshold = getEffectiveThreshold('scoreThreshold', SCORE_THRESHOLD);
+    tabState.score = finalScore;
+    tabState.riskLevel = finalScore >= threshold ? RISK_LEVEL.WARNING : RISK_LEVEL.SAFE;
+    tabState.isAnalyzed = true;
+    tabState.correctUrl = rule1Result.correctUrl || null;
+    tabState.officialName = rule1Result.officialName || null;
+    tabState.ruleResults = {
+      rule1: rule1Result,
+      rule2: { score: 0, triggered: false, status: 'pass', detail: 'Gate 未通过，跳过下载检测', detailCN: '下载检测: 跳过（无下载特征）' },
+      rule3: { score: 0, triggered: false, status: 'neutral', detail: 'Gate 未通过，跳过ICP检测', detailCN: 'ICP备案: 跳过（无下载特征）' },
+      rule4: { score: 0, triggered: false, status: 'pass', detail: 'Gate 未通过，跳过链接分析', detailCN: '链接分析: 跳过（无下载特征）' },
+      rule5: { score: 0, triggered: false, status: 'pass', detail: 'Gate 未通过，跳过代码工程化', detailCN: '代码工程化: 跳过（无下载特征）' },
+      domainAge: domainAgePart.domainAgeResult,
+      ageBonus: domainAgePart.ageBonusResult,
+      downloadLink: { score: 0, triggered: false, status: 'pass', detail: 'Gate 未通过，跳过跨域检测', detailCN: '下载链接: 跳过' }
+    };
+    tabState.lastAnalyzed = Date.now();
+    if (pageMetrics) tabState.pageMetrics = pageMetrics;
+    if (linkMetrics) tabState.linkMetrics = linkMetrics;
+
+    await saveTabState(tabId, tabState);
+    await CacheManager.set(domain, {
+      score: finalScore,
+      isMalicious: finalScore >= threshold,
+      gateFailed: true,
+      correctUrl: rule1Result.correctUrl || null,
+      ruleResults: sanitizeRuleResultsForCache(tabState.ruleResults)
+    });
+
+    if (finalScore >= threshold) {
+      setIconRed(tabId);
+      await triggerWarningFlow(tabId, tabState);
+      console.log('[ServiceWorker] Gate 失败但域名检测触发警告:', { domain, finalScore });
+    } else {
+      setIconGreen(tabId, finalScore);
+      console.log('[ServiceWorker] Gate 失败，显示绿色图标:', { domain, finalScore });
+    }
+    return;
+  }
+
+  // ==================== Gate 通过：完整检测 ====================
+  // 清理预评估阶段保留的 Whois Promise（已缓存到 WhoisClient，不再需要）
+  _whoisPromises.delete(tabId);
+  console.log('[ServiceWorker] Gate 通过，运行完整检测:', domain);
 
   const ctx = {
     url: tabState.url || url,
@@ -1713,6 +1855,9 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       return;
     }
 
+    // 注：下载事件不受 Gate 约束。即使 Gate 判定页面无下载特征，
+    // 若用户实际触发了压缩包下载，仍在此处拦截检测——实际下载是比 HTML 分析更强的信号。
+
     // 官方网站检查：域名+ICP 均通过检测的官网不拦截下载
     if (tabState.isAnalyzed) {
       const r1 = tabState.ruleResults && tabState.ruleResults.rule1;
@@ -1893,7 +2038,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'PAGE_ANALYSIS_RESULT': {
       const tabId = sender.tab ? sender.tab.id : null;
       if (!tabId) { sendResponse({ received: false }); return false; }
-      const { url, domain, icpStrings, textSignals, pageMetrics, linkMetrics, hasIcpGovLink } = message.payload;
+      const { url, domain, icpStrings, textSignals, pageMetrics, linkMetrics, hasIcpGovLink, needsDetection } = message.payload;
 
       // 竞态条件防护：校验 content script 所在标签页的当前 URL 是否与采集数据的域名一致
       // 若用户已导航到其他页面，则丢弃此消息（旧页面的数据不应污染新页面的检测结果）
@@ -1920,6 +2065,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ts.domain = domain || ts.domain;
         if (pageMetrics) ts.pageMetrics = pageMetrics;
         if (linkMetrics) ts.linkMetrics = linkMetrics;
+        // 存储 Gate 判定结果（Content Script 计算，零新增常量）
+        ts._needsDetection = !!(needsDetection);
         // 存储 Resource Resolver 数据
         if (message.payload.resourceData) {
           ts._resourceData = message.payload.resourceData;
@@ -2419,6 +2566,8 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   await clearTabState(tabId);
   _warningCooldown.delete(tabId);
   _authenticationTabs.delete(tabId);
+  cancelGateTimeout(tabId);
+  _whoisPromises.delete(tabId);
 });
 
 // 安装/更新

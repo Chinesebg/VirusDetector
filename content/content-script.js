@@ -24,7 +24,9 @@
 (async function () {
   'use strict';
 
-  // 推广/产品页面关键词（内联自 constants.js，避免 content_scripts 动态导入受限）
+  // ==================== 内联常量（同步自 utils/constants.js，content_scripts 不支持 ES module 导入） ====================
+
+  // 推广/产品页面关键词 → constants.js PROMO_KEYWORDS
   const PROMO_KEYWORDS = [
     '下载', '产品', '软件', '安装', '免费', '官方', '应用', '工具',
     '版本', '最新', '破解', '注册', '激活', '绿色', '汉化', '插件',
@@ -34,6 +36,30 @@
     'app', 'tool', 'version', 'latest', 'crack', 'register', 'activate',
     'pro', 'premium', 'setup', 'license', 'keygen', 'patch', 'trial',
     'portable', 'release', 'full version'
+  ];
+
+  // 下载按钮/链接关键词 → constants.js DOWNLOAD_BUTTON_KEYWORDS + DOWNLOAD_LINK_KEYWORDS 合并
+  const DOWNLOAD_BUTTON_KW = [
+    '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',
+    '安全下载', '点击下载', '直接下载', '本地下载', '官方下载',
+    'download now', 'free download', 'download free',
+    '立即安装', '一键安装', '安装包', 'setup', 'install', 'get started'
+  ];
+
+  // 全部文件扩展名（压缩包 + 可执行文件）→ constants.js FILE_EXTENSIONS
+  const FILE_EXTENSIONS = [
+    '.exe', '.msi', '.dmg', '.apk', '.appx', '.deb', '.rpm',
+    '.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz',
+    '.iso', '.cab', '.arj', '.lzh', '.z', '.zst',
+    '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.jar',
+    '.bin', '.run', '.sh', '.pkg'
+  ];
+
+  // 压缩包扩展名 → constants.js ARCHIVE_EXTENSIONS
+  const ARCHIVE_EXTENSIONS_ALL = [
+    '.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.tgz',
+    '.bz2', '.xz', '.z', '.iso', '.cab', '.arj', '.lzh',
+    '.tar.bz2', '.tar.xz', '.gz2', '.zst'
   ];
 
   const AUTH_URL_PATTERN = /(?:^|[\/?#&=._-])(login|logon|logout|signin|sign-in|signout|sign-out|auth|oauth|authorize|sso|saml|2fa|mfa|otp|totp|challenge|verify|verification|webauthn|passkey|password|credential|credentials|session|callback|consent|recover|recovery|reset|device)(?:$|[\/?#&=._-])/i;
@@ -163,14 +189,7 @@
     // 用于规则四A-③：跟踪链接被多少不同元素指向
     var linkElementMap = new Map();  // href (normalized) → Set of element signatures
 
-    var DOWNLOAD_KW = ['下载','download','下載','立即下载','免费下载','高速下载',
-      '安全下载','点击下载','直接下载','本地下载','官方下载','download now',
-      'free download','立即安装','一键安装','安装包','setup','install','get started'];
-    var FILE_EXTS = ['.exe','.msi','.dmg','.apk','.zip','.rar','.7z',
-      '.tar','.gz','.tgz','.bz2','.xz','.iso','.cab','.arj','.bat','.cmd',
-      '.ps1','.vbs','.scr','.jar','.bin','.run','.sh','.pkg'];
-    var ARCHIVE_EXTS = ['.zip','.rar','.7z','.tar','.gz','.tgz','.bz2','.xz',
-      '.iso','.cab','.arj','.lzh','.z','.zst'];
+    // 使用文件顶层内联常量，与 utils/constants.js 保持同步
 
     // 收集待检测死链的候选项（同域名的不同路径链接）
     var deadLinkCandidates = [];
@@ -229,9 +248,9 @@
           var parentClass = (link.parentElement ? link.parentElement.className : '').toLowerCase();
           var combined = [linkText, parentText, ariaLabel, className, parentClass].join(' ');
 
-          var hasDownloadText = DOWNLOAD_KW.some(function(kw) { return combined.includes(kw); });
-          var isFileLink = FILE_EXTS.some(function(ext) { return lowerHref.endsWith(ext); });
-          var isArchive = ARCHIVE_EXTS.some(function(ext) { return lowerHref.endsWith(ext); });
+          var hasDownloadText = DOWNLOAD_BUTTON_KW.some(function(kw) { return combined.includes(kw); });
+          var isFileLink = FILE_EXTENSIONS.some(function(ext) { return lowerHref.endsWith(ext); });
+          var isArchive = ARCHIVE_EXTENSIONS_ALL.some(function(ext) { return lowerHref.endsWith(ext); });
 
           if (hasDownloadText || isFileLink) {
             externalDownloadLinks.push({
@@ -324,11 +343,7 @@
     var archiveDownloadLinks = [];
     var archiveSeen = new Set();
     // 下载关键词（复用于判断链接意图）
-    var DL_KW = ['下载','download','下載','立即下载','免费下载','高速下载',
-      '安全下载','点击下载','直接下载','本地下载','官方下载','download now',
-      'free download','立即安装','一键安装','安装包','setup','install','get started'];
-    var ARCHIVE_EXTS_DEDICATED = ['.zip','.rar','.7z','.tar','.gz','.tar.gz','.tgz',
-      '.bz2','.xz','.z','.iso','.cab','.arj','.lzh','.tar.bz2','.tar.xz','.zst'];
+    // 使用文件顶层内联常量 ARCHIVE_EXTENSIONS_ALL + DOWNLOAD_BUTTON_KW
 
     for (var j = 0; j < links.length; j++) {
       var alink = links[j];
@@ -338,8 +353,8 @@
 
       // 跳过非压缩包扩展名
       var matchedExt = null;
-      for (var e = 0; e < ARCHIVE_EXTS_DEDICATED.length; e++) {
-        var ext = ARCHIVE_EXTS_DEDICATED[e];
+      for (var e = 0; e < ARCHIVE_EXTENSIONS_ALL.length; e++) {
+        var ext = ARCHIVE_EXTENSIONS_ALL[e];
         if (alowerHref.endsWith(ext)) {
           matchedExt = ext;
           break;
@@ -364,7 +379,7 @@
         var aparentText = (alink.parentElement ? alink.parentElement.textContent : '').toLowerCase();
         var aariaLabel = (alink.getAttribute('aria-label') || '').toLowerCase();
         var acombined = alinkText + ' ' + aparentText + ' ' + aariaLabel;
-        var ahasDownloadKW = DL_KW.some(function(kw) { return acombined.includes(kw); });
+        var ahasDownloadKW = DOWNLOAD_BUTTON_KW.some(function(kw) { return acombined.includes(kw); });
 
         archiveDownloadLinks.push({
           href: ahref.substring(0, 200),
@@ -662,9 +677,7 @@
       '百度网盘', '蓝奏云', '天翼云', '123云盘', '阿里云盘',
       '迅雷下载', 'bt下载', '磁力链接'
     ];
-    var ARCHIVE_EXTS_DEDICATED = ['.zip','.rar','.7z','.tar','.gz','.tar.gz','.tgz',
-      '.bz2','.xz','.z','.iso','.cab','.arj','.lzh','.tar.bz2','.tar.xz','.zst',
-      '.exe','.msi','.apk','.dmg','.pkg'];
+    // 使用文件顶层内联常量 FILE_EXTENSIONS（压缩包 + 可执行文件全覆盖）
     var currentHost = window.location.hostname;
     var currentUrl = window.location.href;
     var results = [];
@@ -683,8 +696,8 @@
 
         // 跳过归档/可执行文件（它们不需要中间页抓取）
         var isArchive = false;
-        for (var e = 0; e < ARCHIVE_EXTS_DEDICATED.length; e++) {
-          if (lowerPath.endsWith(ARCHIVE_EXTS_DEDICATED[e])) { isArchive = true; break; }
+        for (var e = 0; e < FILE_EXTENSIONS.length; e++) {
+          if (lowerPath.endsWith(FILE_EXTENSIONS[e])) { isArchive = true; break; }
         }
         if (isArchive) continue;
 
@@ -1125,10 +1138,48 @@
     var hasIcpGovLink = checkIcpGovLink();
     var textSignals = safeCollect(function() { return collectTextSignals(bodyText); }, null);
     var resourceData = safeCollect(function() { return collectResourceData(); }, null);
+
+    // Gate: 下载意图门控 — 任一条件触发即视为有下载意图
+    // 条件1：任意 <a> 链接文本含下载关键词（不论 href 指向什么、甚至 javascript: 函数调用）
+    // 条件2：页面正文中下载关键词密度 ≥ 阈值（默认 2.0 次/千字符，可在设置中调整）
+    // Gate 条件1：扫描所有 <a> 元素文本（使用顶层 DOWNLOAD_BUTTON_KW）
+    var anyLinkDownloadText = false;
+    var allLinks = document.querySelectorAll('a');
+    for (var gi = 0; gi < allLinks.length && !anyLinkDownloadText; gi++) {
+      var gLink = allLinks[gi];
+      var gText = (gLink.textContent || '').toLowerCase();
+      var gAria = (gLink.getAttribute('aria-label') || '').toLowerCase();
+      var gCombined = gText + ' ' + gAria;
+      for (var gk = 0; gk < DOWNLOAD_BUTTON_KW.length; gk++) {
+        if (gCombined.indexOf(DOWNLOAD_BUTTON_KW[gk]) !== -1) {
+          anyLinkDownloadText = true;
+          break;
+        }
+      }
+    }
+
+    // Gate 条件2：页面正文下载关键词密度
+    var downloadDensity = 0;
+    var bodyTextLower = bodyText.toLowerCase();
+    var kwHitCount = 0;
+    for (var dk = 0; dk < DOWNLOAD_BUTTON_KW.length; dk++) {
+      var kw = DOWNLOAD_BUTTON_KW[dk];
+      var searchPos = 0;
+      while ((searchPos = bodyTextLower.indexOf(kw, searchPos)) !== -1) {
+        kwHitCount++;
+        searchPos += kw.length;
+      }
+    }
+    if (bodyText.length > 100) {
+      downloadDensity = (kwHitCount / bodyText.length) * 1000;
+    }
+    var needsDetection = anyLinkDownloadText || downloadDensity >= 2.0;
+
     var payload = {
       url: window.location.href, domain: window.location.hostname, title: document.title,
       icpStrings: icpStrings, pageMetrics: pageMetrics, linkMetrics: linkMetrics,
-      hasIcpGovLink: hasIcpGovLink, textSignals: textSignals, resourceData: resourceData
+      hasIcpGovLink: hasIcpGovLink, textSignals: textSignals, resourceData: resourceData,
+      needsDetection: needsDetection
     };
 
     // 二次扫描去重：与首次结果比对，无新增数据则跳过发送
@@ -1139,16 +1190,21 @@
       var newLinkCount = linkMetrics ? linkMetrics.totalLinks : 0;
       var firstExternalCount = _firstScanData.linkMetrics ? _firstScanData.linkMetrics.externalDownloadLinks.length : 0;
       var newExternalCount = linkMetrics ? linkMetrics.externalDownloadLinks.length : 0;
+      var firstNeedsDetection = _firstScanData.needsDetection === true;
 
-      // ICP 备案号无新增 且 链接/外链数量无增长 → 跳过二次发送
-      if (newIcpCount <= firstIcpCount && newLinkCount <= firstLinkCount && newExternalCount <= firstExternalCount) {
+      // Gate 状态变化时强制发送（动态内容可能给已有链接添加下载文本）
+      if (firstNeedsDetection !== needsDetection) {
+        console.log('[VirusDetector] 二次扫描检测到 Gate 状态变化 (' + firstNeedsDetection + '→' + needsDetection + ')，强制发送');
+      }
+      // ICP 备案号无新增 且 链接/外链数量无增长 且 Gate 状态未变 → 跳过二次发送
+      else if (newIcpCount <= firstIcpCount && newLinkCount <= firstLinkCount && newExternalCount <= firstExternalCount) {
         console.log('[VirusDetector] 二次扫描无新增数据，跳过重复发送');
         return;
       }
       console.log('[VirusDetector] 二次扫描检测到新数据 (ICP:' + firstIcpCount + '→' + newIcpCount +
         ', 链接:' + firstLinkCount + '→' + newLinkCount + ', 外链:' + firstExternalCount + '→' + newExternalCount + ')');
     } else {
-      _firstScanData = { icpStrings: icpStrings, linkMetrics: linkMetrics };
+      _firstScanData = { icpStrings: icpStrings, linkMetrics: linkMetrics, needsDetection: needsDetection };
     }
 
     chrome.runtime.sendMessage({
@@ -1204,6 +1260,25 @@
             console.error('[VirusDetector] 链接分析采集失败:', e);
           }
           var bodyText = (document.body ? document.body.innerText : '') || '';
+          // Gate: 同 sendAnalysisResult 中的逻辑
+          // Gate: 复用顶层 DOWNLOAD_BUTTON_KW
+          var anyLinkDL = false;
+          var allAnchors = document.querySelectorAll('a');
+          for (var gi2 = 0; gi2 < allAnchors.length && !anyLinkDL; gi2++) {
+            var gl2 = allAnchors[gi2];
+            var gc2 = ((gl2.textContent || '') + ' ' + (gl2.getAttribute('aria-label') || '')).toLowerCase();
+            for (var gk2 = 0; gk2 < DOWNLOAD_BUTTON_KW.length; gk2++) {
+              if (gc2.indexOf(DOWNLOAD_BUTTON_KW[gk2]) !== -1) { anyLinkDL = true; break; }
+            }
+          }
+          var btLower = bodyText.toLowerCase();
+          var kwHits = 0;
+          for (var dk2 = 0; dk2 < DOWNLOAD_BUTTON_KW.length; dk2++) {
+            var kw2 = DOWNLOAD_BUTTON_KW[dk2]; var sp2 = 0;
+            while ((sp2 = btLower.indexOf(kw2, sp2)) !== -1) { kwHits++; sp2 += kw2.length; }
+          }
+          var density2 = bodyText.length > 100 ? (kwHits / bodyText.length) * 1000 : 0;
+          var needsDetection2 = anyLinkDL || density2 >= 2.0;
           sendResponse({
             success: true,
             pageMetrics: safeCollect(function() { return collectPageMetrics(bodyText); }, null),
@@ -1212,6 +1287,7 @@
             hasIcpGovLink: checkIcpGovLink(),
             textSignals: safeCollect(function() { return collectTextSignals(bodyText); }, null),
             resourceData: safeCollect(function() { return collectResourceData(); }, null),
+            needsDetection: needsDetection2,
             title: document.title,
             url: window.location.href
           });

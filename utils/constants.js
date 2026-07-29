@@ -19,6 +19,9 @@ export const VERSION = '2.5.1';
 /** 触发警告的总分阈值（注入拦截 + 警告窗口 + 图标变红） */
 export const SCORE_THRESHOLD = 100;
 
+/** 下载意图 Gate 文本密度阈值（每千字符命中次数），可在设置中调整 */
+export const DOWNLOAD_DENSITY_THRESHOLD = 2.0;
+
 /** 触发下载确认弹窗的阈值（不注入页面拦截，仅弹窗二次确认） */
 export const DOWNLOAD_CONFIRM_THRESHOLD = 80;
 

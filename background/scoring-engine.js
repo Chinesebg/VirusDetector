@@ -391,6 +391,16 @@ export class ScoringEngine {
   }
 
   // ==================== 规则一：域名仿冒 (60分) ====================
+
+  /**
+   * 独立运行规则一（供 Gate 预评估阶段使用，无需 Content Script 数据）。
+   * @param {string} domain - 页面域名
+   * @returns {Object} 规则一结果
+   */
+  static evaluateRule1Only(domain) {
+    return this._evaluateRule1(domain);
+  }
+
   static _evaluateRule1(domain) {
     const result = {
       score: 0, triggered: false, status: 'pass',

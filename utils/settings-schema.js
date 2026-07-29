@@ -161,6 +161,7 @@ export const SETTINGS_DEFAULTS = {
   emoji_densityMaxScore: 20,
   emoji_densityThresholdLow: 2.0,
   emoji_densityThresholdHigh: 10.0,
+  downloadDensityThreshold: 2.0,
   code_signalsFull: 3,
   code_signalsPartial: 2,
 
@@ -427,6 +428,7 @@ export const SECTIONS = [
           { key: 'emoji_densityMaxScore', type: 'number', label: 'Emoji 得分上限', desc: 'Emoji 密度检测单次最大加分', min: 0, max: 100, step: 5, mode: 'advanced' },
           { key: 'emoji_densityThresholdLow', type: 'number', label: '密度下阈值(个/千字)', desc: '低于此值不加分', min: 0, max: 20, step: 0.5, mode: 'advanced' },
           { key: 'emoji_densityThresholdHigh', type: 'number', label: '密度上阈值(个/千字)', desc: '高于此值得满分', min: 0, max: 50, step: 0.5, mode: 'advanced' },
+          { key: 'downloadDensityThreshold', type: 'number', label: '下载意图密度阈值(个/千字)', desc: '页面下载关键词密度高于此值时触发完整检测', min: 0, max: 20, step: 0.5, mode: 'advanced' },
           { key: 'emoji_keywordMatchThreshold', type: 'number', label: '关键词匹配阈值', desc: '推广关键词匹配≥此值才进入Emoji检测', min: 0, max: 10, step: 1, mode: 'advanced' },
           { key: 'emoji_minTextLength', type: 'number', label: '最小文本长度', desc: '页面文本少于此值跳过Emoji检测', min: 0, max: 1000, step: 10, mode: 'advanced' }
         ]
