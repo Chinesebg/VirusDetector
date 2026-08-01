@@ -41,7 +41,6 @@ export class JsonResolver extends BaseResolver {
     const rawPageUrl = node.parentUrl || context.pageUrl;
     const foundUrls = new Set();
 
-    // 从原始文本匹配
     ARCHIVE_URL_PATTERN.lastIndex = 0;
     let aMatch;
     while ((aMatch = ARCHIVE_URL_PATTERN.exec(content)) !== null) {
@@ -49,7 +48,6 @@ export class JsonResolver extends BaseResolver {
       if (absoluteUrl) foundUrls.add(absoluteUrl);
     }
 
-    // 尝试 JSON.parse 并递归遍历值
     try {
       const parsed = JSON.parse(content);
       this._extractUrlsFromValue(parsed, foundUrls, rawPageUrl);
@@ -96,7 +94,7 @@ export class JsonResolver extends BaseResolver {
    * 递归遍历 JSON 值，提取 URL 字符串
    */
   _extractUrlsFromValue(value, urlSet, baseUrl, depth = 0) {
-    if (depth > JSON_MAX_DEPTH) return; // 防止深层嵌套
+    if (depth > JSON_MAX_DEPTH) return;
 
     if (typeof value === 'string') {
       // 检查是否像 URL
@@ -122,7 +120,6 @@ export class JsonResolver extends BaseResolver {
       }
     } else if (value && typeof value === 'object') {
       const keys = Object.keys(value);
-      // 限制：最多遍历 JSON_MAX_KEYS 个 key
       for (let i = 0; i < Math.min(keys.length, JSON_MAX_KEYS); i++) {
         this._extractUrlsFromValue(value[keys[i]], urlSet, baseUrl, depth + 1);
       }

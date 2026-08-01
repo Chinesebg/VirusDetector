@@ -93,7 +93,6 @@ export class ScriptResolver extends BaseResolver {
     }
 
     // ========== 7. 通用 URL 模式（从字符串字面量中提取） ==========
-    // 提取脚本中所有字符串字面量里的 URL
     const stringLiterals = this._extractStringLiterals(scriptText);
     for (const literal of stringLiterals) {
       URL_PATTERN.lastIndex = 0;
@@ -104,7 +103,6 @@ export class ScriptResolver extends BaseResolver {
       }
     }
 
-    // 创建节点
     for (const url of foundUrls) {
       const { ext, isArchive, isExecutable, isTxt, isJson } = this.classifyUrl(url);
       const isCrossDomain = this.isCrossDomain(url, pageUrl);

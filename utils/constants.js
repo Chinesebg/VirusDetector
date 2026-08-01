@@ -21,7 +21,7 @@
  * 注意：更新检测以 chrome.runtime.getManifest().version 为唯一真源，不依赖此常量；
  * 发版时仍需同步修改此处 + manifest.json + README（本常量已与 manifest 脱节过一次，见 v2.5.1）。
  */
-export const VERSION = '2.5.1';
+export const VERSION = '2.5.2';
 
 // ==================== 评分体系 ====================
 /** 触发警告的总分阈值（注入拦截 + 警告窗口 + 图标变红） */
@@ -33,24 +33,23 @@ export const DOWNLOAD_DENSITY_THRESHOLD = 2.0;
 /** 触发下载确认弹窗的阈值（不注入页面拦截，仅弹窗二次确认） */
 export const DOWNLOAD_CONFIRM_THRESHOLD = 80;
 
-// 新规则分值
 export const SCORE_RULE_1 = 60;              // 规则一：域名仿冒
 export const SCORE_RULE_2_HIGH = 40;         // 规则二：压缩包下载（域名已有≥30嫌疑）
 export const SCORE_RULE_2_LOW = 10;          // 规则二：压缩包下载（弱信号）
 export const SCORE_RULE_3 = 50;             // 规则三：ICP备案号缺失（所有网站）
 export const SCORE_RULE_3_FAKE = 30;        // 规则三：ICP备案号存在但无法核验（无政府链接/虚假号码）
 
-// 规则四：链接分析（替代证书检测）
-export const SCORE_RULE_4A_SAME_PAGE = 20;      // 规则四A-① ≥3个链接指向当前页本身（完全一致URL）
-export const SCORE_RULE_4A_DEAD_LINK = 20;      // 规则四A-② ≥1个死链（指向不存在子页面的链接）
+// 规则四：链接分析
+export const SCORE_RULE_4A_SAME_PAGE = 20;      // 规则四A-① ≥8个链接指向当前页本身（完全一致URL）
+export const SCORE_RULE_4A_DEAD_LINK = 20;      // 规则四A-② ≥3个死链（指向不存在子页面的链接）
 export const SCORE_RULE_4A_DUPLICATE_LINK = 20; // 规则四A-③ 重复链接得分封顶（scoring-engine 按 4*log2(n) 计算后取 min）
 export const SCORE_RULE_4A_DOWNLOAD_LINK_BONUS = 10; // 规则四A-③附加 该链接是下载链接（含download等字样）
 export const SCORE_RULE_4B_DOWNLOAD_BTN = 10;   // 规则四B-a 外链绑在下载按钮上
 export const SCORE_RULE_4B_FILE_LINK = 10;      // 规则四B-b 外链指向文件
 export const SCORE_RULE_4B_ARCHIVE_LINK = 10;   // 规则四B-b附加 文件是压缩包格式
 
-export const SCORE_RULE_5 = 30;              // 规则五：代码工程化 — 高度可疑（3/3信号）
-export const SCORE_RULE_5_PARTIAL = 20;      // 规则五：代码工程化 — 中度可疑（2/3信号）
+export const SCORE_RULE_5 = 30;              // 规则五：代码工程化 — 高度可疑（强信号≥2）
+export const SCORE_RULE_5_PARTIAL = 20;      // 规则五：代码工程化 — 中度可疑（强信号≥1且总信号≥2）
 
 // 规则二触发阈值：域名嫌疑分达到此值才给高分
 export const RULE_2_DOMAIN_SUSPICION_THRESHOLD = 30;
@@ -91,9 +90,8 @@ export const RISK_LEVEL = {
 
 // ==================== 压缩包扩展名 ====================
 /**
- * 压缩包/镜像文件扩展名（全量并集，各层统一口径）。
- * 注意：含 .img/.dmg（盘镜像/磁盘映像），全库唯一真源；
- * 镜像至 content-constants.js，导航守卫与页面注入层经 window.VT_CONSTANTS 读取。
+ * 压缩包/镜像文件扩展名（全量并集，各层统一口径，含 .img/.dmg）。
+ * 全库唯一真源；content-constants.js 镜像与导航守卫/注入层兜底由 constants-sync 测试保证一致。
  */
 export const ARCHIVE_EXTENSIONS = [
   '.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.tgz',
@@ -141,8 +139,8 @@ export const DOWNLOAD_INTENT_KEYWORDS = [
 ];
 
 /**
- * 中间下载页抓取关键词（config.js INTERMEDIATE_PAGE_KEYWORDS ∪ content-script INTERMEDIATE_KW）。
- * 语义独立（标记"页面 A → 下载页 B"的中间页），与 DOWNLOAD_BUTTON_KEYWORDS 重叠是设计如此。
+ * 中间下载页抓取关键词（标记"页面 A → 下载页 B"的中间页）。
+ * 语义独立，与 DOWNLOAD_BUTTON_KEYWORDS 重叠是设计如此。
  */
 export const INTERMEDIATE_PAGE_KEYWORDS = [
   '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',
@@ -244,7 +242,7 @@ export const FRAMEWORK_RESOURCE_MARKERS = [
 /** 认证页动态卸载导航守卫的页面事件名（MAIN world 内 dispatchEvent 通信） */
 export const DISABLE_GUARD_EVENT = 'virus-detector:disable-navigation-guard';
 
-// 认证 URL 特征正则源串（navigation-guard / content-script / service-worker 三处同源构造）
+// 认证 URL 特征正则源串（content-script / service-worker 由本源串构造；navigation-guard 持有字面量兜底副本，由 constants-sync 测试保证一致）
 /** 认证主机名特征（hostname 前缀） */
 export const AUTH_HOST_PATTERN_SOURCE = '^(login|logon|signin|auth|oauth|account|accounts|identity|id|sso|secure|security|verify|verification|console)\\.';
 /** 认证路径/参数特征（路径+query+hash 中分段匹配） */
@@ -316,14 +314,11 @@ export const UI_KEYS = {
   ACTIVE_SECTION: 'vt_activeSection'
 };
 
-// 缓存有效期（毫秒）
-export const CACHE_TTL = 24 * 60 * 60 * 1000;  // 24小时
+export const CACHE_TTL = 24 * 60 * 60 * 1000;  // 24 小时
 
-/** 1 天毫秒数（通用时间换算） */
-export const DAY_MS = 24 * 60 * 60 * 1000;
+export const DAY_MS = 24 * 60 * 60 * 1000;  // 1 天
 
-/** 1 小时毫秒数（通用时间换算） */
-export const HOUR_MS = 60 * 60 * 1000;
+export const HOUR_MS = 60 * 60 * 1000;  // 1 小时
 
 // ==================== 用户上报 → GitHub Issue ====================
 /** Cloudflare Worker 上报代理 URL（部署后替换为实际 URL） */
@@ -462,8 +457,7 @@ export const REPORTS_MAX_ENTRIES = 200;
 
 // ==================== Resource Resolver 配置 ====================
 /**
- * Resource Resolver 的运行时参数（唯一真源）。
- * background/resource-resolver/config.js 从此处 import 引用，不再各自维护。
+ * Resource Resolver 的运行时参数（唯一真源；config.js 以其为别名 re-export）。
  */
 
 /** Resource Resolver 最大递归深度（0=页面本身，最多向下 N 层） */
@@ -526,7 +520,7 @@ export const MIN_SCRIPT_LENGTH = 3;
 /** 匹配文本片段前后保留的上下文字符数（txt-resolver 与中间页报告） */
 export const SNIPPET_PADDING = 40;
 
-// ==================== 内容脚本采集参数（content-script / content-constants 镜像） ====================
+// ==================== 内容脚本采集参数 ====================
 /** 死链候选数上限（先截断再抽样） */
 export const DEAD_LINK_CHECK_MAX = 5;
 
@@ -557,7 +551,7 @@ export const ATTR_SCAN_LIMIT = 2000;
 /** TreeWalker 全文本节点遍历上限（ICP 文本扫描） */
 export const MAX_NODES = 15000;
 
-// ==================== CJK 内容判定（content-script 与 icp-utils 同一口径） ====================
+// ==================== CJK 内容判定 ====================
 /** CJK 统一表意文字 Unicode 范围（U+4E00–U+9FFF / U+3400–U+4DBF / U+F900–U+FAFF） */
 export const CJK_RANGES = [
   [0x4E00, 0x9FFF],
@@ -688,10 +682,11 @@ export const DOWNLOAD_CONFIRM_ACTIONS = {
  * @returns {RegExp} 'gi' 标志正则；调用方如需重复 exec 须自行重置 lastIndex
  */
 export function buildArchiveUrlPattern(exts) {
-  // 扩展名自带前导点，逐项转义为 \.zip 形式；模板不再额外加 \.（否则会出现 \.(\.zip) 双重转义）
-  const body = exts.map((e) => e.replace(/\./g, '\\.')).join('|');
+  // 扩展名自带前导点，逐项前置反斜杠转义为 \.zip 形式（'\\' 是标准转义，避免 \. 歧义写法）；
+  // 模板不再额外加 \.（否则会出现 \.(\.zip) 双重转义）；正则源码中 / 无需转义，直接写 /
+  const body = exts.map((e) => '\\' + e).join('|');
   return new RegExp(
-    `https?:\\/\\/[^\\s<>"'{}[\\]|\\\\^\`]+(${body})(?=[?#\\s]|$)`,
+    `https?://[^\\s<>"'{}[\\]|\\\\^\`]+(${body})(?=[?#\\s]|$)`,
     'gi'
   );
 }

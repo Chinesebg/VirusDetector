@@ -161,14 +161,12 @@ async function _lookupParentDomains(failedDomain) {
     const parentDomain = parts.slice(i).join('.');
     if (!parentDomain.includes('.')) continue;
 
-    // 先查 WhoisClient 缓存
     const cached = _cache.get(parentDomain);
     if (cached && (Date.now() - cached.timestamp) < WHOIS_CACHE_TTL) {
       console.log(`[WhoisClient] 父域名缓存命中: ${parentDomain}`);
       return cached.result;
     }
 
-    // 尝试 RDAP 查询父域名
     console.log(`[WhoisClient] 回退 RDAP 查询父域名: ${parentDomain}`);
     const rdapResult = await RdapClient.lookup(parentDomain);
     if (rdapResult && !rdapResult._rdap?.unsupported && !rdapResult._rdap?.notFound) {
@@ -192,7 +190,6 @@ async function _lookupParentDomains(failedDomain) {
       return result;
     }
 
-    // 尝试 WhoisCX 查询父域名
     console.log(`[WhoisClient] 回退 WhoisCX 查询父域名: ${parentDomain}`);
     const whoisResult = await _lookupViaWhoisCx(parentDomain);
     if (whoisResult) {
@@ -216,7 +213,6 @@ async function _lookupParentDomains(failedDomain) {
  * @returns {Promise<WhoisResult|null>}
  */
 async function _lookupViaWhoisCx(normalizedDomain) {
-  // 速率限制等待
   await _waitForWhoisRateLimit();
 
   const url = `${WHOIS_API_URL}?domain=${encodeURIComponent(normalizedDomain)}`;
@@ -286,7 +282,6 @@ async function _lookupViaWhoisCx(normalizedDomain) {
     return null;
   }
 
-  // WhoisCX 业务状态码校验
   if (json.status !== 1) {
     _recordError(normalizedDomain, 'parse',
       `WhoisCX 业务状态码异常 (status=${json.status})，预期 status=1`,
@@ -301,7 +296,6 @@ async function _lookupViaWhoisCx(normalizedDomain) {
     return null;
   }
 
-  // 字段提取
   const info = json.data.info || {};
   const domainSuffix = json.data.domain_suffix || '';
   const creationTime = info.creation_time || info.registration_time || json.data.creation_time || json.data.registration_time || '';

@@ -12,6 +12,14 @@
  *
  * 性能：无 DOM 操作，无网络请求，每个导航检查 < 0.01ms
  *
+ * 输入与输出：
+ *   - 输入：后续页面 JS 对 window.location / window.open 的赋值与调用
+ *   - 输出：危险导航弹窗确认（用户取消则返回 null / 阻止赋值），正常导航透传原始实现
+ *   - 副作用：hook 安装时保留原引用（window.open.__virusDetector_original）并标记
+ *     window.__virusDetectorNavGuard；敏感认证页提前 return，不做任何 hook；页面派发
+ *     DISABLE_GUARD_EVENT 事件可动态卸载全部 hook（还原 location setter 与 window.open、
+ *     移除事件监听并删除标记）
+ *
  * @module navigation-guard
  */
 
@@ -72,13 +80,12 @@
   function isDangerousUrl(url) {
     if (!url || typeof url !== 'string') return false;
 
-    // 跳过非 http(s) 协议
+    // 协议判断（完整 scheme 检测，替代脆弱的前缀匹配）：
+    // 仅拦截 http/https；其他任何协议（javascript:/data:/mailto:/blob:/file:/ftp: 等）
+    // 与纯锚点一律不拦（由 L3 downloads API 兜底）；相对路径（./file.zip、/path/file.zip）继续检查
     var lower = url.toLowerCase().trim();
-    if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
-      // 也检查相对路径（如 ./file.zip 或 /path/file.zip）
-      if (lower.startsWith('javascript:') || lower.startsWith('data:') ||
-          lower.startsWith('mailto:') || lower.startsWith('#') ||
-          lower.startsWith('blob:') || lower.startsWith('file://')) {
+    if (!/^https?:\/\//.test(lower)) {
+      if (lower.charAt(0) === '#' || /^[a-z][a-z0-9+.-]*:/.test(lower)) {
         return false;
       }
     }
@@ -127,26 +134,15 @@
   }
 
   // ==================== 1. Hook window.location 的 setter ====================
+  // 通过 __lookupSetter__/__defineSetter__ 拦截 location 赋值（直接重写
+  // window.location 在 strict mode 下会抛异常）；__defineSetter__ 不可用时静默降级，
+  // 由 Layer 2 页面注入拦截器覆盖此场景。
 
-  // 保存原始的 location 对象引用
-  var _origLocation = window.location;
-  var _locationProxy = null;
   var _origLocationSetter = null;
   var _patchedLocationSetter = null;
 
   try {
-    // 方法 A：使用 __proto__ 重写 location 对象的 href 属性
-    // 这在大多数浏览器中有效
-
-    // 创建代理对象拦截对 location 的赋值
-    var _LocationProxy = function () {};
-
-    // 拦截 location.href = 'xxx' 和 location = 'xxx'
-    // 注意：直接重写 window.location 在 strict mode 下会抛异常
-    // 因此我们使用 __defineSetter__ 方式
-
     if (window.__lookupSetter__ && window.__defineSetter__) {
-      // 保存原始 setter
       _origLocationSetter = window.__lookupSetter__('location');
       if (_origLocationSetter) {
         _patchedLocationSetter = function (val) {
@@ -162,10 +158,7 @@
         window.__defineSetter__('location', _patchedLocationSetter);
       }
     }
-  } catch (e) {
-    // __defineSetter__ 在某些环境下不可用 → 静默降级
-    // injectBlockerFunc（Layer 2）会覆盖此场景
-  }
+  } catch (e) { /* __defineSetter__ 不可用 → 静默降级 */ }
 
   // ==================== 2. Hook window.open ====================
 

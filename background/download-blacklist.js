@@ -102,7 +102,6 @@ export class DownloadBlacklist {
     const existing = blacklist[normalized];
 
     if (existing) {
-      // 更新已有条目
       existing.hitCount += 1;
       existing.lastHit = now;
       // 追加源页面（去重，最多保留 BLACKLIST_MAX_SOURCE_PAGES 条）
@@ -119,12 +118,10 @@ export class DownloadBlacklist {
           existing.sourcePages = existing.sourcePages.slice(-BLACKLIST_MAX_SOURCE_PAGES);
         }
       }
-      // 追加文件类型
       if (fileType && !existing.fileTypes.includes(fileType)) {
         existing.fileTypes.push(fileType);
       }
     } else {
-      // 新增条目
       this._enforceCapacity(blacklist, normalized);
 
       blacklist[normalized] = {

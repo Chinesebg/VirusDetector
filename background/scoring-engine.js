@@ -10,7 +10,7 @@
  *   规则二 压缩包下载       → 最高 40 分 | Phase A 主动扫描跨域压缩包链接（上限 30）+ Phase B 被动下载拦截（上限 40）
  *   规则三 ICP 备案缺失     → 50 分 | 对所有网站检测 ICP 备案号
  *   规则四 链接分析         → 最高 70 分 | Part A (同页/死链/重复链接) + Part B (下载按钮/压缩包链接)
- *   规则五 代码工程化       → 最高 60 分 | 三信号组合判定（DOM复杂度+框架检测+外部资源），2信号+20，3信号+30
+ *   规则五 代码工程化       → 最高 60 分 | 4 信号强/弱组合判定（强≥2→+30，强≥1且总≥2→+20）
  *                              + 子规则：关键词预筛选 + Emoji密度检测（推广页面Emoji滥用），最高+20
  *   域名年龄评分             → 最高 60 分 | 基于 RDAP/WhoisCX 双查询的 S 型衰减函数计分，新注册域名更可疑
  *   域名年龄减分             → 最高 20 分 | 注册时间长的域名可抵消部分可疑分数（需当前分数 >= 20）
@@ -24,10 +24,17 @@
  *   - PSL 统一域名标准化：注册域提取应用于白名单、官方匹配、RDAP/Whois 查询
  *   - 官方网站早期退出：域名+ICP 均确认安全后跳过规则四/五
  *   - 规则四 Part B-b 仅对压缩包链接加分，普通文件链接不再单独计分
- *   - 规则五区分三信号组合：DOM节点数+框架标记+外部资源，避免对正常简单页面误报
+ *   - 规则五强/弱信号组合判定：仅存在强信号（DOM过少/异常JS引用）时才罚，避免合法轻量站误报
  *   - 规则五子规则：先通过推广关键词预筛选确认页面性质，再计算Emoji密度，分段线性映射加分
  *   - RDAP/WhoisCX 查询结果缓存 24 小时，避免重复请求
  *   - 下载域名黑名单：跨站情报复用，用户手动拦截后自动加分，90 天自动清理
+ *
+ * 输入输出：
+ *   - 输入：页面上下文 ctx（url / domain / linkMetrics / pageMetrics / textSignals /
+ *     downloadState / icpStrings / hasIcpGovLink 等）+ 可选 settings（逐规则开关，默认全开）
+ *   - 输出：评分结果对象 { totalScore, isSuspicious, riskLevel, breakdown, matchedEntry,
+ *     correctUrl, officialName, isConfirmedOfficial, preliminaryScore, domainAgeResult, timestamp }
+ *   - 副作用：域名年龄经 WhoisClient 查询（结果缓存 24h）；下载黑名单读写 chrome.storage.local
  */
 
 import { DomainDatabase } from './domain-database.js';
@@ -508,7 +515,7 @@ export class ScoringEngine {
     // Phase A — 主动检测（基于页面扫描）
     // ═══════════════════════════════════════════════
 
-    // 优先使用 ResourceGraph 数据（新版），linkMetrics 作为回退（旧版）
+    // 优先使用 ResourceGraph 数据，缺失时回退 linkMetrics（页面扫描数据）
     let archiveLinks;
     if (resourceGraph && resourceGraph.discoveredArchives && resourceGraph.discoveredArchives.length > 0) {
       // 从 ResourceGraph 转换归档节点为 Rule2 可用的格式
@@ -523,7 +530,7 @@ export class ScoringEngine {
         };
       });
     } else {
-      // 回退：使用 linkMetrics（旧版数据源）
+      // 回退：linkMetrics（页面扫描数据源）
       archiveLinks = (linkMetrics && linkMetrics.archiveDownloadLinks)
         ? linkMetrics.archiveDownloadLinks : [];
     }
@@ -826,7 +833,6 @@ export class ScoringEngine {
       }
 
       // 2a'. 仿冒品牌且页面展示备案号（含政府核验链接）→ 备案号盗用自被仿冒品牌
-      //     典型如 app-4399.com.cn：仿冒「4399」却展示 4399 的「闽B2-20040099-1」，
       //     即使备案接口不可用（uapis 403 / apihz 限流）也能据此判定为钓鱼/仿冒。
       if (impersonating && realNumbers.length > 0) {
         result.icpFound = true;
@@ -915,15 +921,18 @@ export class ScoringEngine {
 
   // ==================== 规则四：链接分析 ====================
   /**
-   * ┌─ Part A（先执行）:
-   * │  ① ≥3个链接指向当前页本身（完整URL完全一致）         → +20
-   * │  ② ≥1个死链（指向不存在子页面，非hash/js占位）       → +20
-   * │  ③ ≥4个不同元素指向同一个链接                         → +20
-   * │     若该链接为下载链接（含down/download等）            → 再+10
+   * ┌─ Part A（先执行，命中即返回）:
+   * │  ① ≥8个链接指向当前页本身（完整URL完全一致，SAME_PAGE_LINK_THRESHOLD） → +20
+   * │  ② ≥3个死链（DEAD_LINK_THRESHOLD，指向不存在子页面）                    → +20
+   * │  ③ ≥10个不同元素指向同一个【跨域/下载】链接（仅可疑目标计分）           → min(20, 4·log2(n))
+   * │     若该链接为下载链接（含down/download等）                              → 再+10
    * │  ①+②+③ 可叠加（最高+70）
-   * └─ Part B（仅当Part A总分为0时才执行）:
+   * └─ Part B（仅当 Part A 为 0 时执行）:
    *     a. 外链绑定在"下载"按钮上       → +10
    *     b. 外链指向压缩包格式文件       → +10
+   * └─ Part C（仅当 Part B < 30 时执行，可与 B 部分叠加）:
+   *     a. 页面文本中的隐藏跨域压缩包链接（每链接 +5，封顶 20）
+   *     b. .txt 文件解析出的跨域压缩包链接（每链接 +8，封顶 20）
    */
   static _evaluateRule4(linkMetrics, domain) {
     const result = {
@@ -941,7 +950,7 @@ export class ScoringEngine {
     let partAScore = 0;
     const partAReasons = [];
 
-    // Part A-①：≥5个链接指向当前页本身（完整URL完全一致）
+    // Part A-①：≥SAME_PAGE_LINK_THRESHOLD 个链接指向当前页本身（完整URL完全一致）
     if (linkMetrics.samePageLinks >= resolveSetting('link_samePageThreshold', SAME_PAGE_LINK_THRESHOLD)) {
       partAScore += resolveSetting('rule4a_samePageScore', SCORE_RULE_4A_SAME_PAGE);
       partAReasons.push(linkMetrics.samePageLinks + '个链接完全指向当前页');
@@ -1052,19 +1061,18 @@ export class ScoringEngine {
    *
    * 前提：页面文本内容 > 500 字符（排除空白/占位页面，避免误报）
    *
-   * 结构信号：
-   *   信号1 — DOM节点数 < 100       （页面结构过于简单，不受HTML格式化影响）
-   *   信号2 — 无主流框架痕迹         （资源 URL + DOM 特征 + HTML 标记检测）
-   *   信号3 — 外部资源去重总数 < 5    （脚本+样式+图片+字体+媒体，不含同源资源）
-   *   信号4 — 可疑 JS 引用模式        （模板化语言包/通用脚本路径等克隆式资源布局）
+   * 结构信号（分强/弱两档）：
+   *   信号1 — DOM节点数 < 100（强：页面结构过于简单，不受HTML格式化影响）
+   *   信号2 — 无主流框架痕迹（弱：合法静态站用 Docusaurus/MkDocs/Hugo/Astro 等常见）
+   *   信号3 — 外部资源去重总数 < 5（弱：自包含/自托管站常见）
+   *   信号4 — 可疑 JS 引用模式（强：模板化语言包/通用脚本路径等克隆式资源布局）
    *
-   * 组合判定（信号数替代原OR逻辑，降低对正常简单页面的误报）：
-   *   ≥3 个信号命中 → +30 分（高度可疑：经典钓鱼空壳/克隆站特征齐备）
-   *   2 个信号命中 → +20 分（中度可疑：两个维度异常）
-   *   0-1 信号     →   0 分（证据不足，不单独加分）
+   * 组合判定（仅存在强信号时才罚，避免"无框架+资源少"两个弱信号的合法轻量站误伤）：
+   *   强信号 ≥ 2                → +30 分（高度可疑）
+   *   强信号 ≥ 1 且总信号 ≥ 2    → +20 分（中度可疑）
+   *   仅弱信号 / 无信号          →  0 分（证据不足，不单独加分）
    *
    * 设计原则：
-   *   - 正常页面几乎不会多个结构信号同时命中（即有外部资源、有框架、DOM复杂）
    *   - 单信号在正常页面中常见（如简单博客无框架），不应处罚
    *   - 钓鱼/AI生成页面通常同时满足多个信号，组合判定可精准识别
    *
@@ -1087,7 +1095,7 @@ export class ScoringEngine {
       return result;
     }
 
-    // ---- 子规则 B：关键词预筛选 + Emoji 密度检测（独立于三信号体系） ----
+    // ---- 子规则 B：关键词预筛选 + Emoji 密度检测（独立于结构信号判定） ----
     const emojiDensityResult = resolveSetting('emojiDensityCheck', true)
       ? this._evaluateRule5EmojiDensity(pageText, textSignals)
       : { score: 0, triggered: false, status: 'disabled', detail: 'Emoji密度检测已关闭', detailCN: 'Emoji密度: 已关闭', density: 0 };
@@ -1158,7 +1166,7 @@ export class ScoringEngine {
         signalDetailCN = '代码工程化: 正常';
       }
     } else {
-      signalDetail = '页面文本内容不足，跳过三信号检测';
+      signalDetail = '页面文本内容不足，跳过结构信号检测';
       signalDetailCN = '代码工程化: 内容不足';
     }
 
@@ -1490,14 +1498,10 @@ export class ScoringEngine {
    * @returns {boolean}
    */
   static isArchiveFile(filename, url = '', mime = '') {
-    // 第一层：文件名扩展名检测（增加空值安全检查）
+    // 第一层：文件名扩展名检测（复合扩展名如 .tar.gz 已包含在 ARCHIVE_EXTENSIONS 中）
     if (filename) {
       const lower = filename.toLowerCase();
-      const matchByFilename = ARCHIVE_EXTENSIONS.some(ext => {
-        if (ext.startsWith('.')) return lower.endsWith(ext);
-        // 处理如 .tar.gz 的复合扩展名
-        return lower.endsWith(ext);
-      });
+      const matchByFilename = ARCHIVE_EXTENSIONS.some(ext => lower.endsWith(ext));
       if (matchByFilename) return true;
     }
 
@@ -1506,10 +1510,7 @@ export class ScoringEngine {
       try {
         const urlObj = new URL(url);
         const pathname = urlObj.pathname.toLowerCase();
-        const matchByUrl = ARCHIVE_EXTENSIONS.some(ext => {
-          if (ext.startsWith('.')) return pathname.endsWith(ext);
-          return pathname.endsWith(ext);
-        });
+        const matchByUrl = ARCHIVE_EXTENSIONS.some(ext => pathname.endsWith(ext));
         if (matchByUrl) return true;
       } catch (e) { /* URL解析失败，跳过此层检测 */ }
     }

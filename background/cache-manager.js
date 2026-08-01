@@ -61,9 +61,7 @@ export class CacheManager {
 
       if (!entry) return null;
 
-      // 检查是否过期
       if (Date.now() - entry.timestamp > await _getCacheTtlMs()) {
-        // 过期删除
         await chrome.storage.local.remove(key);
         return null;
       }

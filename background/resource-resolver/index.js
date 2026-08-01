@@ -178,10 +178,8 @@ export class ResourceResolver {
       maxIntermediatePageSize: options.maxIntermediatePageSize || MAX_INTERMEDIATE_PAGE_SIZE
     };
 
-    // 创建 ResourceGraph
     const graph = new ResourceGraph(pageUrl);
 
-    // 创建根节点（页面本身）
     const rootNode = createResourceNode(
       RESOURCE_TYPES.HTML,
       pageUrl,
@@ -195,11 +193,9 @@ export class ResourceResolver {
     );
     graph.addNode(rootNode);
 
-    // 访问集合
     const visited = new Set();
     visited.add(normalizeUrlKey(pageUrl));
 
-    // 解析上下文
     const context = {
       graph,
       config,
@@ -210,13 +206,11 @@ export class ResourceResolver {
       pageDomain: graph.pageDomain
     };
 
-    // BFS 队列：[{ url, parentUrl, depth, type, sourceType, metadata }]
     const queue = [];
 
     // 将 Content Script 采集的资源数据作为初始种子加入队列
     _enqueueInitialData(queue, initialData, pageUrl, visited, graph);
 
-    // BFS 主循环
     while (queue.length > 0 && graph.totalResources < config.maxTotalResources) {
       // 总超时检查
       if (Date.now() - startTime > config.totalTimeout) {
@@ -231,13 +225,11 @@ export class ResourceResolver {
       if (visited.has(normalizedUrl)) continue;
       visited.add(normalizedUrl);
 
-      // 深度限制
       if (current.depth > config.maxDepth) continue;
 
       // 数量限制
       if (graph.totalResources >= config.maxTotalResources) break;
 
-      // 创建节点
       const node = createResourceNode(
         current.type || RESOURCE_TYPES.UNKNOWN,
         current.url,
@@ -248,15 +240,12 @@ export class ResourceResolver {
       );
       graph.addNode(node);
 
-      // 添加父子关系
       if (current.parentUrl) {
         graph.addEdge(current.parentUrl, current.url);
       }
 
-      // 查找匹配的解析器
       const children = await _resolveWithResolvers(node, context);
 
-      // 将子节点加入队列
       for (const child of children) {
         const childNormalized = normalizeUrlKey(child.url);
         if (!visited.has(childNormalized)) {

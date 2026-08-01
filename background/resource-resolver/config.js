@@ -159,10 +159,11 @@ export const NEW_URL_PATTERN = /new\s+URL\s*\(\s*["'`]([^"'`]+)["'`]/gi;
  * 后缀边界靠字符串字面量引号收尾锚定。
  */
 export const STRING_URL_PATTERN = (() => {
+  // 扩展名前置反斜杠转义（'\\' 标准转义）；正则源码中 / 无需转义
   const exts = [...ARCHIVE_EXTENSIONS, ...EXECUTABLE_EXTENSIONS]
-    .map((e) => e.replace(/\./g, '\\.'))
+    .map((e) => '\\' + e)
     .join('|');
-  return new RegExp(`["'\`](https?:\/\/[^"'\`]*(${exts})[^"'\`]*)["'\`]`, 'gi');
+  return new RegExp(`["'\`](https?://[^"'\`]*(${exts})[^"'\`]*)["'\`]`, 'gi');
 })();
 
 // ==================== 资源类型枚举 ====================

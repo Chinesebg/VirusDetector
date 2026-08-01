@@ -19,6 +19,10 @@
  *   - 去重：同一域名不重复添加
  *   - 容量上限：500 条（与下载黑名单一致）
  *   - 无自动过期（站点黑名单由用户手动管理）
+ *
+ * 前置条件：
+ *   - 依赖 chrome.storage.local（键 site_blacklist）与 UrlUtils（PSL 域名标准化）
+ *   - 调用时机：分析入口处由 service-worker.js 调用，命中直接赋高分（SCORE_SITE_BLACKLIST）
  */
 
 import { 
@@ -95,7 +99,6 @@ export class SiteBlacklist {
     const now = Date.now();
 
     if (blacklist.hasOwnProperty(normalized)) {
-      // 已存在：更新来源和备注
       const existing = blacklist[normalized];
       existing.addedBy = info.addedBy || existing.addedBy || 'manual';
       if (info.note) existing.note = info.note;
@@ -104,7 +107,6 @@ export class SiteBlacklist {
       return;
     }
 
-    // 新增条目
     this._enforceCapacity(blacklist, normalized);
 
     blacklist[normalized] = {
@@ -129,7 +131,6 @@ export class SiteBlacklist {
     const blacklist = await this.getAll();
     let removed = false;
 
-    // 尝试精确匹配，再试主域名匹配
     if (blacklist.hasOwnProperty(normalized)) {
       delete blacklist[normalized];
       removed = true;

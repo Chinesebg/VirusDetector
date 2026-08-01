@@ -8,6 +8,14 @@
  * 避免同一阈值在两处各自维护导致漂移；SENSITIVITY_PRESETS 的覆盖值
  * 属于预设专属调优，保持独立字面量。
  *
+ * 导出：SETTINGS_DEFAULTS（默认值）、SECTIONS（分区/分组/设置项元数据）、
+ * SENSITIVITY_PRESETS（灵敏度预设）、validateSetting（单值校验并钳制）、
+ * SCHEMA_VERSION + migrateSettings（设置版本迁移）。
+ *
+ * migrateSettings 一次性迁移 v1 → v2：修正 apihz 凭据键名拼写
+ * （icpApiApiahzId/Key → icpApiApihzId/Key），幂等（_schemaVersion ≥
+ * SCHEMA_VERSION 时原样返回）；调用方读设置后调用，返回值不同则写回。
+ *
  * @module settings-schema
  */
 
@@ -41,7 +49,7 @@ import {
 } from './constants.js';
 
 // ==================== Schema 版本 ====================
-// v1 → v2：修正 apihz 凭据键名拼写（icpApiApiahzId → icpApiApihzId），见 migrateSettings()
+// 版本迁移见文件尾 migrateSettings()
 /** 用于检测旧版本数据并触发迁移 */
 export const SCHEMA_VERSION = 2;
 
@@ -81,7 +89,7 @@ export const SENSITIVITY_PRESETS = {
   medium: {
     label: '中灵敏度（默认）',
     description: '平衡检测率与误报率，适合大多数用户。',
-    overrides: {}  // 空对象表示使用 SETTINGS_DEFAULTS 中的值
+    overrides: {}
   },
   high: {
     label: '高灵敏度',
@@ -119,8 +127,8 @@ export const SENSITIVITY_PRESETS = {
 // ==================== 设置默认值 ====================
 export const SETTINGS_DEFAULTS = {
   // === 常规设置 (basic) ===
-  sensitivityPreset: PRESET_LEVELS[1],   // 'medium'（共享枚举 PRESET_LEVELS）
-  theme: THEME_VALUES[0],                // 'dark'（共享枚举 THEME_VALUES）
+  sensitivityPreset: PRESET_LEVELS[1],
+  theme: THEME_VALUES[0],
   desktopNotifications: true,
   showWarningWindow: true,
   showDetectionDetails: true,
@@ -199,7 +207,7 @@ export const SETTINGS_DEFAULTS = {
   code_signalsPartial: 2,
 
   // === 缓存与性能 (advanced) ===
-  cache_ttlHours: CACHE_TTL / HOUR_MS,   // 24 小时（constants.js CACHE_TTL 派生）
+  cache_ttlHours: CACHE_TTL / HOUR_MS,
   api_timeoutMs: WHOIS_API_TIMEOUT,
   whois_apiIntervalMs: MIN_WHOIS_INTERVAL_MS,
   warning_cooldownMs: WARNING_COOLDOWN_MS,
@@ -352,7 +360,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 2.5 备案查询 API ==========
+  // ========== 3. 备案查询 API ==========
   {
     id: 'icp-api',
     label: '备案查询 API',
@@ -404,7 +412,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 5. 链接分析 ==========
+  // ========== 4. 链接分析 ==========
   {
     id: 'links',
     label: '链接分析',
@@ -431,7 +439,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 6. 代码工程化 ==========
+  // ========== 5. 代码工程化 ==========
   {
     id: 'code',
     label: '代码工程',
@@ -469,7 +477,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 7. 域名年龄 ==========
+  // ========== 6. 域名年龄 ==========
   {
     id: 'domain-age',
     label: '域名年龄',
@@ -503,7 +511,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 8. 缓存与性能 ==========
+  // ========== 7. 缓存与性能 ==========
   {
     id: 'cache',
     label: '缓存与性能',
@@ -552,7 +560,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 9. 隐私与数据 ==========
+  // ========== 8. 隐私与数据 ==========
   {
     id: 'privacy',
     label: '隐私与数据',
@@ -599,7 +607,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 10. 站点黑名单 ==========
+  // ========== 9. 站点黑名单 ==========
   {
     id: 'site-blacklist',
     label: '站点黑名单',
@@ -610,7 +618,7 @@ export const SECTIONS = [
     renderFn: '_renderSiteBlacklistSection'
   },
 
-  // ========== 11. 白名单 ==========
+  // ========== 10. 白名单 ==========
   {
     id: 'whitelist',
     label: '白名单',
@@ -621,7 +629,7 @@ export const SECTIONS = [
     renderFn: '_renderWhitelistSection'
   },
 
-  // ========== 12. 关于 ==========
+  // ========== 11. 关于 ==========
   {
     id: 'about',
     label: '关于',

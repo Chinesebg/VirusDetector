@@ -1,3 +1,9 @@
+/**
+ * 扩展安全结构测试（node:test + 源码切片断言）。
+ * 读取 manifest.json 与 navigation-guard / content-script / service-worker
+ * 源码，经 sourceBetween marker 定位关键代码段，验证 MV3 service worker
+ * 结构、MAIN world 守卫退出顺序等安全关键模式。
+ */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';

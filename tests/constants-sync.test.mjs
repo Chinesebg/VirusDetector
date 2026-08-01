@@ -142,7 +142,7 @@ test('归档 URL 提取正则：constants 生成器与 content-script 模板行�
   // content-script 内的拼接模板（与 constants.js buildArchiveUrlPattern 同一规则：
   // 扩展名转义 + 后缀边界 lookahead）。两处同模板 + 同列表 ⇒ 正则源串必须逐字符一致。
   const buildContentScriptPattern = (exts) => new RegExp(
-    `https?:\\/\\/[^\\s<>"'{}[\\]|\\\\^\`]+(${exts.map((e) => e.replace(/\./g, '\\.')).join('|')})(?=[?#\\s]|$)`,
+    `https?://[^\\s<>"'{}[\\]|\\\\^\`]+(${exts.map((e) => '\\' + e).join('|')})(?=[?#\\s]|$)`,
     'gi'
   );
 

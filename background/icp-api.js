@@ -23,6 +23,11 @@
  *     不引入新的误报或漏报
  *
  * @module icp-api
+ *
+ * 前置条件：
+ *   - 运行于扩展 Service Worker：需 chrome.storage.local 与 fetch 均可用
+ *   - 调用时机：评分引擎规则三评估时由 service-worker.js 异步调用
+ *     IcpApiClient.query()，结果经 _applyIcpUpdate 增量修正评分
  */
 
 import { ICP_API_CONFIG, STORAGE_KEYS, VERSION } from '../utils/constants.js';

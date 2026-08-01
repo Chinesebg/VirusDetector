@@ -27,12 +27,10 @@ export class TxtResolver extends BaseResolver {
   async resolve(node, context) {
     const discovered = [];
 
-    // 检查深度
     if (node.depth >= context.config.maxDepth) {
       return discovered;
     }
 
-    // 标记已解析
     node.metadata._resolved = true;
 
     let content;
@@ -67,7 +65,6 @@ export class TxtResolver extends BaseResolver {
       if (absoluteUrl) foundUrls.add(absoluteUrl);
     }
 
-    // 创建子节点
     for (const url of foundUrls) {
       const { ext, isArchive, isExecutable, isTxt, isJson } = this.classifyUrl(url);
       const isCrossDomain = this.isCrossDomain(url, context.pageUrl);

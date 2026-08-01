@@ -141,7 +141,6 @@ async function _fetchBootstrap() {
     const [tlds, urls] = entry;
     if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
 
-    // 取第一个 RDAP 服务器 URL（通常只有一个）
     const baseUrl = urls[0].replace(/\/+$/, '/'); // 确保以 / 结尾
     for (const tld of tlds) {
       if (typeof tld === 'string') {
@@ -194,7 +193,6 @@ function _buildFallbackCache() {
  * @returns {Promise<BootstrapCache>}
  */
 async function _ensureBootstrap() {
-  // 已有缓存且在有效期内 → 直接返回
   if (_bootstrapCache && (Date.now() - _bootstrapCache.timestamp) < BOOTSTRAP_CACHE_TTL) {
     return _bootstrapCache;
   }
@@ -310,7 +308,6 @@ function _extractFromEntities(entities, role, fieldName = 'fn') {
       if (val) return val;
     }
 
-    // 递归搜索子实体
     if (entity.entities && Array.isArray(entity.entities)) {
       const val = _extractFromEntities(entity.entities, role, fieldName);
       if (val) return val;
@@ -355,7 +352,7 @@ function _daysFromNow(dateStr) {
     if (isNaN(date.getTime())) return -1;
     const diffMs = Date.now() - date.getTime();
     if (diffMs < 0 && Math.abs(diffMs) > DAY_MS) {
-      // 如果日期在未来超过 1 天，视为过期时间且天数差为负
+      // 日期在未来超过 1 天（如 RDAP 返回的过期时间）：返回剩余天数（正数）
       return Math.ceil(-diffMs / (1000 * 60 * 60 * 24));
     }
     return Math.floor(Math.abs(diffMs) / (1000 * 60 * 60 * 24));

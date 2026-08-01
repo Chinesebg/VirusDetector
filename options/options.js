@@ -4,6 +4,17 @@
  * 负责设置页的全部交互逻辑：加载/渲染/保存设置、基础/高级模式切换、
  * 灵敏度预设应用、导入/导出/恢复默认、Toast 通知等。
  *
+ * 前置条件：
+ *   - 依赖 utils/settings-schema.js（SETTINGS_DEFAULTS/SECTIONS/灵敏度预设/schema 迁移）与
+ *     utils/constants.js 常量；依赖 options.html 的固定元素 id 与结构，以及 localStorage
+ *     缓存的模式与分区键（UI_KEYS.ACTIVE_SECTION/MODE）
+ *
+ * 输入与输出：
+ *   - 输入：用户交互 + chrome.storage.local 中持久化的 GLOBAL_SETTINGS（保存前经
+ *     validateSetting/migrateSettings 校验与迁移）
+ *   - 输出：保存设置写回 chrome.storage.local；模式/主题切换、灵敏度预设等即时生效并
+ *     Toast 反馈；导入/导出/恢复默认同步更新存储
+ *
  * @module options
  */
 
@@ -14,6 +25,7 @@ import {
   TOAST_DURATION_MS, GITHUB_REPO_PAGE, GITHUB_NEW_ISSUE_URL, GITHUB_RELEASES_PAGE
 } from '../utils/constants.js';
 
+/** 设置页主控制器：持有运行时设置状态，提供加载/渲染/保存、模式切换、预设应用等交互逻辑 */
 class SettingsApp {
   constructor() {
     /** @type {Object} 当前设置（运行时状态） */
@@ -22,7 +34,6 @@ class SettingsApp {
     this._activeSection = localStorage.getItem(UI_KEYS.ACTIVE_SECTION) || 'general';
     /** @type {'basic'|'advanced'} 当前模式 */
     this._mode = localStorage.getItem(UI_KEYS.MODE) || 'basic';
-    // 基本模式下不在高级专属分区
     if (this._mode === 'basic') {
       if (ADVANCED_ONLY_SECTIONS.includes(this._activeSection)) {
         this._activeSection = 'general';
@@ -129,21 +140,17 @@ class SettingsApp {
     const container = document.getElementById('section-container');
     if (!container) return;
 
-    // 高亮侧栏
     document.querySelectorAll('.nav-item').forEach(el => {
       el.classList.toggle('active', el.dataset.section === sectionId);
     });
 
-    // 自定义渲染 Section（白名单、黑名单）
     if (section.type === 'custom' && typeof this[section.renderFn] === 'function') {
       this[section.renderFn](container, section);
       return;
     }
 
-    // 关于页特殊处理
     if (section.noCard) {
       container.innerHTML = this._buildAboutHTML();
-      // 异步加载更新信息
       this._loadUpdateInfo();
       this._loadStorageStats();
       return;
@@ -159,7 +166,6 @@ class SettingsApp {
     `;
 
     for (const group of section.groups) {
-      // 过滤模式
       if (!this._isVisible(group.mode)) continue;
 
       html += `<div class="settings-card" id="card-${group.id}">
@@ -177,7 +183,6 @@ class SettingsApp {
     html += `</div>`;
     container.innerHTML = html;
 
-    // 渲染后同步控件值与当前 settings
     this._syncInputsWithSettings();
   }
 
@@ -355,7 +360,6 @@ class SettingsApp {
     if (setting.type !== 'number') return false;
     const preset = this.settings.sensitivityPreset || SETTINGS_DEFAULTS.sensitivityPreset;
     if (preset === PRESET_LEVELS[1]) return false;   // 'medium'（无覆盖，均可用）
-    // 检查此 key 是否在预设的 overrides 中
     const overrides = SENSITIVITY_PRESETS[preset]?.overrides || {};
     return setting.key in overrides;
   }
@@ -366,7 +370,6 @@ class SettingsApp {
     const app = document.getElementById('app');
     if (!app) return;
 
-    // change 事件：输入控件
     app.addEventListener('change', (e) => {
       const target = e.target;
       if (target.matches('.setting-input')) {
@@ -374,7 +377,6 @@ class SettingsApp {
       }
     });
 
-    // click 事件委托
     app.addEventListener('click', (e) => {
       const target = e.target.closest('.nav-item, [data-section], [data-preset], #import-btn, #export-btn, #reset-btn, .mode-segment, [data-action], #modal-cancel-btn, #modal-confirm-btn, #check-update-btn, #download-update-btn, .theme-seg');
       if (!target) return;
@@ -420,7 +422,6 @@ class SettingsApp {
       }
     });
 
-    // 文件导入
     const fileInput = document.getElementById('import-file');
     if (fileInput) {
       fileInput.addEventListener('change', (e) => {
@@ -504,7 +505,6 @@ class SettingsApp {
     document.addEventListener('mouseup', onDragEnd);
     document.addEventListener('touchend', onDragEnd);
 
-    // 点击轨道直接跳转
     app.addEventListener('click', (e) => {
       if (e.target.closest('.preset-thumb') || e.target.closest('.preset-label')) return;
       if (!e.target.closest('.preset-track')) return;
@@ -514,25 +514,21 @@ class SettingsApp {
       }
     });
 
-    // Drawer toggle (hamburger button)
     const drawerToggle = document.getElementById('drawer-toggle-btn');
     if (drawerToggle) {
       drawerToggle.addEventListener('click', () => this._toggleDrawer());
     }
 
-    // Drawer close button (inside sidebar)
     const drawerClose = document.getElementById('drawer-close-btn');
     if (drawerClose) {
       drawerClose.addEventListener('click', () => this._closeDrawer());
     }
 
-    // Overlay click to close drawer
     const drawerOverlay = document.getElementById('drawer-overlay');
     if (drawerOverlay) {
       drawerOverlay.addEventListener('click', () => this._closeDrawer());
     }
 
-    // Auto-close drawer when resizing from narrow to wide
     window.addEventListener('resize', () => {
       if (window.innerWidth > 720) {
         this._closeDrawer();
@@ -567,10 +563,6 @@ class SettingsApp {
       case 'text':
         value = input.value;
         break;
-      case 'theme':
-        // 主题切换由 .theme-seg 点击事件直接处理，此分支不会被触发
-        value = input.value || 'dark';
-        break;
       case 'preset':
         value = input.value;
         break;
@@ -580,17 +572,15 @@ class SettingsApp {
 
     this.settings[key] = value;
 
-    // 主题变更 → 立即生效
+    // 主题变更 → 立即生效（主题控件值由 .theme-seg 点击事件直接处理，此处仅同步设置）
     if (key === 'theme') {
       this._applyTheme();
     }
 
-    // 灵敏度预设变更
     if (key === 'sensitivityPreset') {
       this._applyPresetOverrides(value);
       // 重渲染当前 section（数值输入需要更新禁用状态），跳过淡入动画
       this._renderSection(this._activeSection, true);
-      // 滑块视觉同步（重渲染后会重建 DOM，无需额外调用）
     }
 
     this._saveSettings();
@@ -607,28 +597,12 @@ class SettingsApp {
     this._presetOverrides = { ...presetDef.overrides };
   }
 
-  /** 同步滑块视觉状态 */
-  _syncPresetSlider(value) {
-    const thumb = document.querySelector('.preset-thumb');
-    const fill = document.querySelector('.preset-fill');
-    const labels = document.querySelectorAll('.preset-label');
-    if (!thumb || !fill) return;
-    const steps = PRESET_LEVELS.slice(0, 3);   // ['low', 'medium', 'high']
-    const idx = steps.indexOf(value);
-    const pct = idx / (steps.length - 1) * 100;
-    thumb.style.left = pct + '%';
-    thumb.dataset.value = value;
-    fill.style.width = pct + '%';
-    labels.forEach(l => l.classList.toggle('active', l.dataset.step === value));
-  }
-
   // ==================== 模式切换 ====================
 
   _setMode(mode) {
     if (this._mode === mode) return;
     this._mode = mode;
     try { localStorage.setItem(UI_KEYS.MODE, mode); } catch (e) { }
-    // 切回基础模式时，若当前在高级专属分区则跳转到常规
     if (mode === 'basic') {
       if (ADVANCED_ONLY_SECTIONS.includes(this._activeSection)) {
         this._activeSection = 'general';
@@ -644,7 +618,6 @@ class SettingsApp {
 
   _applyModeToDom() {
     document.documentElement.dataset.mode = this._mode;
-    // 更新分段控件高亮
     document.querySelectorAll('.mode-segment').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.mode === this._mode);
     });
@@ -679,7 +652,6 @@ class SettingsApp {
     this._activeSection = sectionId;
     try { localStorage.setItem(UI_KEYS.ACTIVE_SECTION, sectionId); } catch (e) { }
     this._renderSection(sectionId);
-    // 高亮侧栏
     document.querySelectorAll('.nav-item').forEach(el => {
       el.classList.toggle('active', el.dataset.section === sectionId);
     });
@@ -713,7 +685,6 @@ class SettingsApp {
         throw new Error('无效的设置文件：缺少 settings 字段');
       }
 
-      // 校验每个键
       const validated = {};
       let importedCount = 0;
       for (const [key, value] of Object.entries(data.settings)) {
@@ -728,7 +699,6 @@ class SettingsApp {
         throw new Error('文件中没有找到任何可识别的设置项');
       }
 
-      // 合并
       this.settings = { ...SETTINGS_DEFAULTS, ...validated };
       this._presetOverrides = {};
       this._saveSettings();
@@ -845,7 +815,6 @@ class SettingsApp {
     toast.textContent = message;
     container.appendChild(toast);
 
-    // 3 秒后自动移除
     setTimeout(() => {
       toast.classList.add('removing');
       toast.addEventListener('animationend', () => toast.remove());
@@ -890,7 +859,6 @@ class SettingsApp {
 
     await this._loadWhitelist();
 
-    // 绑定事件
     document.getElementById('wl-import-btn')?.addEventListener('click', () => {
       document.getElementById('wl-import-file')?.click();
     });
@@ -924,8 +892,7 @@ class SettingsApp {
     const editor = document.getElementById('whitelist-editor');
     if (!editor) return;
     const lines = editor.value.split(/[\n\r]+/).map(s => s.trim()).filter(Boolean);
-    const domains = [...new Set(lines)]; // 去重
-    try {
+    const domains = [...new Set(lines)];    try {
       await chrome.storage.local.set({ [STORAGE_KEYS.WHITELIST]: domains });
       // 通知 Service Worker 刷新内存缓存
       try {
@@ -1354,7 +1321,6 @@ class SettingsApp {
             <div class="about-row"><span class="about-label">上次检查</span><span class="about-value">${timeAgo}</span></div>
             ${failedNote}
           </div>`;
-        // 替换检查更新按钮为绿色前往下载
         if (info.releaseUrl) this._swapToDownloadBtn(info.releaseUrl);
       } else {
         statusEl.innerHTML = `
@@ -1507,14 +1473,12 @@ class SettingsApp {
 document.addEventListener('DOMContentLoaded', () => {
   const app = new SettingsApp();
   app.init().then(() => {
-    // 异步加载存储统计
     app._loadStorageStats();
   }).catch(err => {
     console.error('[Settings] 初始化失败:', err);
   });
 });
 
-// 扩展 SettingsApp 以支持存储统计
 SettingsApp.prototype._loadStorageStats = async function () {
   const statsEl = document.getElementById('storage-stats');
   if (!statsEl) return;

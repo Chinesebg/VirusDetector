@@ -9,7 +9,7 @@
  *   1. 页面导航监听 → 白名单检查 → 缓存查询 → 触发评分分析
  *   2. 评分汇总     → 徽章更新（绿/红/蓝） + 警告弹窗 + 下载拦截注入
  *   3. 下载监听     → 压缩包检测 → 取消下载 → 二次确认弹窗 → 用户决策处理
- *   4. 消息路由     → 处理来自 Popup / Content Script / Warning 的 15 种消息类型
+ *   4. 消息路由     → 处理来自 Popup / Content Script / Warning 的消息（类型见 utils/constants.js MSG_TYPES）
  *   5. 白名单管理   → 存储持久化 / 增删查 / 跳过检测 / 缓存清理
  *   6. 黑名单维护   → 下载域名黑名单写入 / 过期清理 / 容量控制
  *   7. 全局设置     → 非压缩包检测开关读取（预留设置页接入）
@@ -18,6 +18,13 @@
  *   - 安装/更新时自动初始化、清理过期缓存、清理过期黑名单条目
  *   - 标签页关闭时自动清理对应状态
  *   - 5 秒冷却期内不重复触发警告（同标签页 / 同域名）
+ *
+ * 输入输出：
+ *   - 输入：chrome.tabs.onUpdated 导航事件、chrome.downloads.onChanged 下载事件，
+ *     Popup / Content Script / Warning 页面经 chrome.runtime.onMessage 发来的消息（MSG_TYPES）
+ *   - 输出：分析结果写缓存（STORAGE_KEYS.DOMAIN_CACHE）、白名单（WHITELIST）、
+ *     下载/站点黑名单（DOWNLOAD_BLACKLIST / SITE_BLACKLIST），
+ *     回传消息给调用方、更新徽章（绿/红/蓝）、打开警告/下载确认页
  */
 
 import { ScoringEngine, setActiveSettings } from './scoring-engine.js';
@@ -49,11 +56,8 @@ import { SETTINGS_DEFAULTS, migrateSettings } from '../utils/settings-schema.js'
 /**
  * 判断 URL 是否应跳过分析（仅分析 http/https 协议）
  *
- * 修复历史误报：file://、data:、ftp:、view-source: 等协议的 URL
- *  - 没有可分析的主机名（hostname 为 ""）
- *  - 历史上所有 file:// 页面共享同一个空字符串缓存键 `domain_cache_`，
- *    一次恶意缓存会污染所有本地文件
- *  - 旧版本 Content Script 曾在所有协议页面运行，并会从 file:// 页面发送数据
+ * 非 http(s) 协议（file:/data:/ftp:/view-source: 等）无有效主机名，
+ * 无法分析也无缓存意义，统一跳过。
  *
  * @param {string} url
  * @returns {boolean} true 表示应跳过（不分析）
@@ -632,7 +636,7 @@ async function triggerWarningFlow(tabId, tabState) {
   }
   _warningCooldown.set(tabId, now);
 
-  // 3. 桌面通知（可通过设置关闭）
+  // 4. 桌面通知（可通过设置关闭）
   if (settings.desktopNotifications !== false) {
     chrome.notifications.create({
       type: 'basic',
@@ -645,7 +649,7 @@ async function triggerWarningFlow(tabId, tabState) {
     }).catch(() => {});
   }
 
-  // 4. 创建警告窗口（可通过设置关闭）
+  // 5. 创建警告窗口（可通过设置关闭）
   if (settings.showWarningWindow !== false) {
     openWarningWindow(tabState);
   }
@@ -658,7 +662,7 @@ async function triggerWarningFlow(tabId, tabState) {
  *
  * @param {number} tabId - 标签页 ID
  * @param {string[]} archiveUrls - 已知的压缩包下载链接 URL 列表
- * @param {string} [mode='full'] - 注入模式: 'lightweight' | 'standard' | 'full'
+ * @param {string} [mode='full'] - 注入模式（档位机制已实现，当前调用方恒传 'full'）
  */
 async function injectDownloadBlocker(tabId, archiveUrls = [], mode = 'full') {
   const settings = await loadGlobalSettings();
@@ -731,12 +735,10 @@ function removeDownloadBlockerFunc() {
  * 注入到页面的拦截函数（独立定义以支持 args 传递）
  * @param {string[]} archiveUrls - 已知压缩包链接
  * @param {boolean} detectNonArchive - 是否检测非压缩包可执行文件
- * @param {string} mode - 注入模式 'lightweight' | 'standard' | 'full'
+ * @param {string} mode - 注入模式 'lightweight' | 'standard' | 'full'（档位机制已实现，当前调用方恒传 'full'）
  * @param {Object} [extLists] - 扩展名/关键词列表（由 SW 从 constants.js 并集生成传入）
  */
 function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
-  // mode: 注入模式 — 'lightweight' (≥50) | 'standard' (≥80) | 'full' (≥100, 默认)
-  // detectNonArchive: 是否检测非压缩包可执行文件（默认 false，由设置页控制）
   detectNonArchive = detectNonArchive || false;
   mode = mode || 'full';
 
@@ -875,7 +877,7 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
   } catch (e) { /* createElement hook 失败时静默降级 */ }
 
   // ══════════════════════════════════════════════════════
-  // Part 1: 已知压缩包链接精准匹配（新版能力）
+  // Part 1: 已知压缩包链接精准匹配
   // ══════════════════════════════════════════════════════
   var knownArchiveSet = new Set();
   if (archiveUrls && archiveUrls.length) {
@@ -928,7 +930,7 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
   }
 
   // ══════════════════════════════════════════════════════
-  // Part 3: 移除 download 属性 + 视觉禁用下载元素（旧版能力）
+  // Part 3: 移除 download 属性 + 视觉禁用下载元素
   // 'lightweight' 模式下跳过（仅 JS hooks + click 拦截，无视觉禁用）
   // ══════════════════════════════════════════════════════
 
@@ -984,7 +986,7 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
   }
 
   // ══════════════════════════════════════════════════════
-  // Part 4: 全局点击拦截 — 双层（新版精准 + 旧版宽泛）
+  // Part 4: 全局点击拦截 — 双层（精准 + 宽泛）
   // ══════════════════════════════════════════════════════
 
   var _clickHandler = function(e) {
@@ -994,7 +996,7 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
     var shouldBlock = false;
     var blockReason = '';
 
-    // 检查1（新版精准）: href 指向已知的压缩包链接
+    // 检查1（精准）: href 指向已知的压缩包链接
     if (target.tagName === 'A' && target.href) {
       var rawHref = target.href;
       if (isKnownArchiveUrl(rawHref)) {
@@ -1015,13 +1017,13 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
       }
     }
 
-    // 检查3（旧版宽泛）: 元素文本包含下载关键词
+    // 检查3（宽泛）: 元素文本包含下载关键词
     if (!shouldBlock && hasDownloadIntent(target)) {
       shouldBlock = true;
       blockReason = 'download_intent';
     }
 
-    // 检查4（旧版宽泛）: 父级元素在下载容器中
+    // 检查4（宽泛）: 父级元素在下载容器中
     if (!shouldBlock) {
       var parent = target.closest('[class*="download"], [id*="download"], ' +
         '[class*="btn-dl"], [class*="btn_dl"]');
@@ -1050,7 +1052,7 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
   document.addEventListener('click', _clickHandler, true);
 
   // ══════════════════════════════════════════════════════
-  // Part 5: MutationObserver 动态监控（旧版能力）
+  // Part 5: MutationObserver 动态监控
   // ══════════════════════════════════════════════════════
   var observer = new MutationObserver(function() {
     disableExistingDownloadButtons();
@@ -1253,10 +1255,10 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
   cancelGateTimeout(tabId);
   tabState._gatePhase = 'resolved';
 
-  // 读取 Gate 判定结果（Content Script 计算，零新增常量）
+  // 读取 Gate 判定结果（Content Script 计算）
   let needsDetection = !!(tabState._needsDetection);
 
-  // P3: Resource Resolver 覆盖 Gate — 若发现隐藏归档链接，强制视为需要检测
+  // Resource Resolver 覆盖 Gate：若发现隐藏归档链接，强制视为需要检测
   let resourceGraph = null;
   const resourceData = tabState._resourceData || null;
   if (resourceData) {
@@ -1275,7 +1277,7 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
 
   const settings = await getSettings();
 
-  // ==================== Gate 失败：仅 Rule 1 + Whois，分数上限 70 ====================
+  // ==================== Gate 失败：仅 Rule 1 + Whois（域名年龄完整贡献，无上限） ====================
   if (!needsDetection) {
     console.log('[ServiceWorker] Gate 未通过，跳过完整检测:', domain);
 
@@ -1440,7 +1442,7 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
         pageUrl: tabState.url || url,
         icpStrings: tabState.icpStrings || [],
         hasIcpGovLink: tabState.hasIcpGovLink || false,
-        textSignals: tabState.textSignals || null,   // ← 新增：携带同步阶段中文信号
+        textSignals: tabState.textSignals || null,   // 同步阶段的中文信号，供异步 ICP 核验复用
         impersonating: syncResult.breakdown.rule1.triggered || false,
         oldRule3: {
           score: rule3Result.score || 0,
@@ -1630,8 +1632,7 @@ async function _applyIcpUpdate(snapshot, icpApi) {
   }
 
   // 重新执行规则三（仅注入 API 结果，其余参数与同步阶段一致）
-  // 注意：同步阶段 _evaluateRule3 的 pageText 和 textSignals 均为 undefined，
-  // 此处保持一致以确保判定结果仅受 icpApi 参数影响。
+  // pageText 保持 undefined（同步阶段亦未传递）；textSignals 复用快照或标签页中已保存的中文信号
   const settings = await getSettings();
   setActiveSettings(settings);
   const newRule3 = ScoringEngine._evaluateRule3(
@@ -1639,7 +1640,7 @@ async function _applyIcpUpdate(snapshot, icpApi) {
     undefined,                       // pageText（同步阶段亦未传递）
     snapshot.icpStrings,
     snapshot.hasIcpGovLink,
-    snapshot.textSignals || tabState.textSignals || null,  // ←修复：传回中文信号，而非 undefined
+    snapshot.textSignals || tabState.textSignals || null,
     icpApi,
     snapshot.impersonating
   );
@@ -1796,7 +1797,7 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
   tabState.isAnalyzed = false;
   await saveTabState(tabId, tabState);
 
-  // 白名单检查：如果在白名单中，直接跳过分析
+  // 白名单：跳过分析
   if (await isWhitelisted(url)) {
     tabState.isAnalyzed = true;
     tabState.isWhitelisted = true;
@@ -1808,7 +1809,7 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
     return;
   }
 
-  // 完全信任域名检查：政府/教育机构域名（.gov.cn / .edu.cn 等）跳过所有检测
+  // 完全信任域名：跳过检测
   if (isFullyTrusted(domain)) {
     tabState.isAnalyzed = true;
     tabState.score = 0;
@@ -1867,13 +1868,13 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 
     const tabState = await loadTabState(tabId);
 
-    // 白名单检查：白名单中的网站不拦截下载
+    // 白名单网站：不拦截下载
     if (tabState.isWhitelisted) {
       console.log('[ServiceWorker] 白名单网站，跳过下载检测:', tabState.domain);
       return;
     }
 
-    // 完全信任域名检查：政府/教育机构域名不拦截下载
+    // 完全信任域名：不拦截下载
     if (isFullyTrusted(tabState.domain)) {
       console.log('[ServiceWorker] 完全信任域名，跳过下载检测:', tabState.domain);
       return;
@@ -2088,7 +2089,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ts.domain = domain || ts.domain;
         if (pageMetrics) ts.pageMetrics = pageMetrics;
         if (linkMetrics) ts.linkMetrics = linkMetrics;
-        // 存储 Gate 判定结果（Content Script 计算，零新增常量）
+        // 存储 Gate 判定结果（Content Script 计算）
         ts._needsDetection = !!(needsDetection);
         // 存储 Resource Resolver 数据
         if (message.payload.resourceData) {

@@ -75,9 +75,8 @@ function getPublicSuffix(hostname) {
     // 回退到 fallback（不淘汰缓存，不影响未来的查询策略变化）
   }
 
-  // 2. 回退匹配：从最右段开始逐级向左扩展，找到 PSL 中最长的连续匹配
-  //    例如 xxx.com.cn: cn✓ → com.cn✗(不在回退集) → 返回 cn
-  //    若回退集包含 com.cn 则: cn✓ → com.cn✓ → xxx.com.cn✗ → 返回 com.cn
+  // 2. 回退匹配：从最右段开始逐级向左扩展，找到 _FALLBACK_TLD 中最长的连续匹配
+  //    例如 xxx.com.cn: cn✓ → com.cn✓ → xxx.com.cn✗（不在集）→ 返回 com.cn
   const parts = hostname.split('.');
   let publicSuffix = parts[parts.length - 1] || ''; // 起始至少匹配 TLD
   for (let len = 2; len <= parts.length; len++) {

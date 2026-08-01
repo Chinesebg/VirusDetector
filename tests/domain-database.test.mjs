@@ -1,3 +1,7 @@
+/**
+ * DomainDatabase 行为测试：断言官方域名精确匹配、子域名命名空间归属
+ * 与跨命名空间仿冒检测（detectSpoof），并验证 Guard A / Rule B 边界约束。
+ */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
