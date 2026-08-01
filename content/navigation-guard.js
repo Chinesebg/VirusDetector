@@ -18,9 +18,22 @@
 (function () {
   'use strict';
 
-  var AUTH_HOST_PATTERN = /^(login|logon|signin|auth|oauth|account|accounts|identity|id|sso|secure|security|verify|verification|console)\./i;
-  var AUTH_PATH_PATTERN = /(?:^|[\/?#&=._-])(login|logon|logout|signin|sign-in|signout|sign-out|auth|oauth|authorize|sso|saml|2fa|mfa|otp|totp|challenge|verify|verification|webauthn|passkey|password|credential|credentials|session|callback|consent|recover|recovery|reset|device)(?:$|[\/?#&=._-])/i;
-  var DISABLE_GUARD_EVENT = 'virus-detector:disable-navigation-guard';
+  // 常量来自 utils/content-constants.js 注入的 window.VT_CONSTANTS（本条目 js 数组首位，
+  // 同一 MAIN world 先于本文件执行）。字段级 `|| 字面量` 兜底：
+  //  - 防御 content-constants.js 加载失败（如页面早期篡改 window 导致注入异常）
+  //  - 兼容测试环境（runInNewContext 独立执行本文件时无 VT_CONSTANTS）
+  // 兜底字面量由 tests/constants-sync.test.mjs 断言与 constants.js 一致。
+  var C = (typeof window !== 'undefined' && window.VT_CONSTANTS) || {};
+
+  var AUTH_HOST_PATTERN = new RegExp(
+    C.AUTH_HOST_PATTERN_SOURCE || '^(login|logon|signin|auth|oauth|account|accounts|identity|id|sso|secure|security|verify|verification|console)\\.',
+    'i'
+  );
+  var AUTH_PATH_PATTERN = new RegExp(
+    C.AUTH_PATH_PATTERN_SOURCE || '(?:^|[\\/?#&=._-])(login|logon|logout|signin|sign-in|signout|sign-out|auth|oauth|authorize|sso|saml|2fa|mfa|otp|totp|challenge|verify|verification|webauthn|passkey|password|credential|credentials|session|callback|consent|recover|recovery|reset|device)(?:$|[\\/?#&=._-])',
+    'i'
+  );
+  var DISABLE_GUARD_EVENT = C.DISABLE_GUARD_EVENT || 'virus-detector:disable-navigation-guard';
 
   function isSensitiveAuthenticationUrl(url) {
     try {
@@ -36,18 +49,19 @@
   if (isSensitiveAuthenticationUrl(window.location.href)) return;
 
   // ==================== 危险扩展名列表 ====================
-  // 与 utils/constants.js ARCHIVE_EXTENSIONS + EXECUTABLE_EXTENSIONS 保持同步
+  // 优先取 window.VT_CONSTANTS（与 constants.js ARCHIVE/EXECUTABLE_EXTENSIONS 并集一致），
+  // 兜底字面量与 constants.js 的同步由 tests/constants-sync.test.mjs 保证。
 
-  var ARCHIVE_EXTS = [
+  var ARCHIVE_EXTS = C.ARCHIVE_EXTENSIONS || [
     '.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.tgz',
     '.bz2', '.xz', '.z', '.iso', '.cab', '.arj', '.lzh',
-    '.tar.bz2', '.tar.xz', '.zst', '.img'
+    '.tar.bz2', '.tar.xz', '.gz2', '.zst', '.img', '.dmg'
   ];
 
-  var EXECUTABLE_EXTS = [
-    '.exe', '.msi', '.apk', '.dmg', '.pkg', '.appx', '.deb', '.rpm',
+  var EXECUTABLE_EXTS = C.EXECUTABLE_EXTENSIONS || [
+    '.exe', '.msi', '.apk', '.pkg', '.appx', '.deb', '.rpm',
     '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.jar',
-    '.bin', '.run', '.sh'
+    '.bin', '.run', '.sh', '.dmg'
   ];
 
   /**

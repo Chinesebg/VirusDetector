@@ -24,48 +24,39 @@
 (async function () {
   'use strict';
 
-  // ==================== 内联常量（同步自 utils/constants.js，content_scripts 不支持 ES module 导入） ====================
+  // ==================== 常量（来自 utils/content-constants.js 注入的 window.VT_CONSTANTS） ====================
+  // content_scripts 不支持 ES module 导入，manifest 在本脚本前注入 content-constants.js；
+  // 与 utils/constants.js 的一致性由 tests/constants-sync.test.mjs 保证。
+  // 字段级 `|| 兜底` 防御注入失败/页面预置同名对象（正常生产环境必由注入提供）。
 
-  // 推广/产品页面关键词 → constants.js PROMO_KEYWORDS
-  const PROMO_KEYWORDS = [
-    '下载', '产品', '软件', '安装', '免费', '官方', '应用', '工具',
-    '版本', '最新', '破解', '注册', '激活', '绿色', '汉化', '插件',
-    '专业版', '正式版', '购买', '激活码', '注册机', '补丁', '试用',
-    '客户端', '安装包', '精简版', '去广告', '便携版',
-    'download', 'product', 'software', 'install', 'free', 'official',
-    'app', 'tool', 'version', 'latest', 'crack', 'register', 'activate',
-    'pro', 'premium', 'setup', 'license', 'keygen', 'patch', 'trial',
-    'portable', 'release', 'full version'
-  ];
+  const C = (typeof window !== 'undefined' && window.VT_CONSTANTS) || {};
 
-  // 下载按钮/链接关键词 → constants.js DOWNLOAD_BUTTON_KEYWORDS + DOWNLOAD_LINK_KEYWORDS 合并
-  const DOWNLOAD_BUTTON_KW = [
-    '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',
-    '安全下载', '点击下载', '直接下载', '本地下载', '官方下载',
-    'download now', 'free download', 'download free',
-    '立即安装', '一键安装', '安装包', 'setup', 'install', 'get started'
-  ];
+  // 推广/产品页面关键词（= constants.js PROMO_KEYWORDS）
+  const PROMO_KEYWORDS = C.PROMO_KEYWORDS || [];
 
-  // 全部文件扩展名（压缩包 + 可执行文件）→ constants.js FILE_EXTENSIONS
-  const FILE_EXTENSIONS = [
-    '.exe', '.msi', '.dmg', '.apk', '.appx', '.deb', '.rpm',
-    '.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz',
-    '.iso', '.cab', '.arj', '.lzh', '.z', '.zst',
-    '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.jar',
-    '.bin', '.run', '.sh', '.pkg'
-  ];
+  // 下载意图关键词（= constants.js DOWNLOAD_INTENT_KEYWORDS，全小写并集）
+  const DOWNLOAD_BUTTON_KW = C.DOWNLOAD_INTENT_KEYWORDS || [];
 
-  // 压缩包扩展名 → constants.js ARCHIVE_EXTENSIONS
-  const ARCHIVE_EXTENSIONS_ALL = [
-    '.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.tgz',
-    '.bz2', '.xz', '.z', '.iso', '.cab', '.arj', '.lzh',
-    '.tar.bz2', '.tar.xz', '.gz2', '.zst'
-  ];
+  // 全部文件扩展名（压缩包 + 可执行文件，= constants.js FILE_EXTENSIONS 并集）
+  const FILE_EXTENSIONS = C.FILE_EXTENSIONS || [];
 
-  const AUTH_URL_PATTERN = /(?:^|[\/?#&=._-])(login|logon|logout|signin|sign-in|signout|sign-out|auth|oauth|authorize|sso|saml|2fa|mfa|otp|totp|challenge|verify|verification|webauthn|passkey|password|credential|credentials|session|callback|consent|recover|recovery|reset|device)(?:$|[\/?#&=._-])/i;
-  const AUTH_HOST_PATTERN = /^(login|logon|signin|auth|oauth|account|accounts|identity|id|sso|secure|security|verify|verification|console)\./i;
-  const AUTH_INTERACTION_PATTERN = /(login|logon|sign\s*in|authorize|verification|verify|passkey|webauthn|2fa|mfa|otp|登录|验证码|身份验证|双重验证|两步验证)/i;
-  const DISABLE_GUARD_EVENT = 'virus-detector:disable-navigation-guard';
+  // 压缩包扩展名（= constants.js ARCHIVE_EXTENSIONS 并集，含 .img/.dmg）
+  const ARCHIVE_EXTENSIONS_ALL = C.ARCHIVE_EXTENSIONS || [];
+
+  // 认证 URL 特征（源串来自 constants.js AUTH_*_PATTERN_SOURCE，构造方式与其 buildAuthPatterns 一致）
+  const AUTH_URL_PATTERN = new RegExp(
+    C.AUTH_PATH_PATTERN_SOURCE || '(?:^|[\\/?#&=._-])(login|logon|logout|signin|sign-in|signout|sign-out|auth|oauth|authorize|sso|saml|2fa|mfa|otp|totp|challenge|verify|verification|webauthn|passkey|password|credential|credentials|session|callback|consent|recover|recovery|reset|device)(?:$|[\\/?#&=._-])',
+    'i'
+  );
+  const AUTH_HOST_PATTERN = new RegExp(
+    C.AUTH_HOST_PATTERN_SOURCE || '^(login|logon|signin|auth|oauth|account|accounts|identity|id|sso|secure|security|verify|verification|console)\\.',
+    'i'
+  );
+  const AUTH_INTERACTION_PATTERN = new RegExp(
+    C.AUTH_INTERACTION_PATTERN_SOURCE || '(login|logon|sign\\s*in|authorize|verification|verify|passkey|webauthn|2fa|mfa|otp|登录|验证码|身份验证|双重验证|两步验证)',
+    'i'
+  );
+  const DISABLE_GUARD_EVENT = C.DISABLE_GUARD_EVENT || 'virus-detector:disable-navigation-guard';
   const AUTH_CONTROL_SELECTOR = [
     'input[type="password"]',
     'input[autocomplete="current-password"]',
@@ -100,7 +91,7 @@
   async function isCurrentPageWhitelisted() {
     try {
       const response = await chrome.runtime.sendMessage({
-        type: 'CHECK_WHITELIST',
+        type: C.MSG_TYPES.CHECK_WHITELIST,
         payload: { url: window.location.href }
       });
       return response?.isWhitelisted === true;
@@ -121,7 +112,7 @@
     } catch (e) { /* ignore */ }
 
     chrome.runtime.sendMessage({
-      type: 'AUTH_INTERACTION_DETECTED',
+      type: C.MSG_TYPES.AUTH_INTERACTION_DETECTED,
       payload: { url: window.location.href }
     }).catch(function() {});
 
@@ -276,7 +267,7 @@
         }
       }
       // 最多检查5个候选
-      var candidatesToCheck = uniqueCandidates.slice(0, 5);
+      var candidatesToCheck = uniqueCandidates.slice(0, C.DEAD_LINK_CHECK_MAX);
 
       // 并行HEAD请求（原串行for循环改为Promise.allSettled，最坏耗时从15秒降至3秒）
       var deadCheckPromises = candidatesToCheck.map(function(candidate) {
@@ -285,7 +276,7 @@
           credentials: 'omit',
           referrerPolicy: 'no-referrer',
           cache: 'no-store'
-        }, 3000)
+        }, C.DEAD_LINK_TIMEOUT_MS)
           .then(function(resp) { return { candidate: candidate, response: resp, error: null }; })
           .catch(function(err) { return { candidate: candidate, response: null, error: err }; });
       });
@@ -295,12 +286,12 @@
         var result = deadCheckResults[r].value;
         if (result.response && result.response.status >= 400) {
           deadLinks++;
-          if (deadLinkSamples.length < 5) {
+          if (deadLinkSamples.length < C.DEAD_LINK_SAMPLE_MAX) {
             deadLinkSamples.push({ href: result.candidate.href.substring(0, 100), text: result.candidate.text, status: result.response.status });
           }
         } else if (result.error) {
           deadLinks++;
-          if (deadLinkSamples.length < 5) {
+          if (deadLinkSamples.length < C.DEAD_LINK_SAMPLE_MAX) {
             deadLinkSamples.push({ href: result.candidate.href.substring(0, 100), text: result.candidate.text, error: 'network_error' });
           }
         }
@@ -309,14 +300,11 @@
 
     // ③ 重复链接检测：统计≥4个不同元素指向同一个链接
     var duplicateLinks = [];
-    var DUPLICATE_THRESHOLD = 4;
-    var DOWNLOAD_LINK_KW = ['down', 'download', '下載', '下载', 'dl', 'get', 'setup',
-      'install', 'free', 'app', 'exe', 'msi', 'dmg', 'apk', 'zip', 'rar', '7z'];
 
     linkElementMap.forEach(function(elements, href) {
-      if (elements.size >= DUPLICATE_THRESHOLD) {
+      if (elements.size >= C.DUPLICATE_LINK_THRESHOLD) {
         var lowerHrefForCheck = href.toLowerCase();
-        var isDownloadLink = DOWNLOAD_LINK_KW.some(function(kw) {
+        var isDownloadLink = C.DOWNLOAD_LINK_KEYWORDS.some(function(kw) {
           return lowerHrefForCheck.includes(kw);
         });
         duplicateLinks.push({
@@ -393,7 +381,12 @@
 
     // ==================== 页面文本中扫描隐藏压缩包链接（多级跳转检测） ====================
     // 恶意跳转页面常在正文中以纯文本形式写下载链接（非 <a> 标签）
-    var TEXT_ARCHIVE_PATTERN = /https?:\/\/[^\s<>"'{}[\]|\\^`]+\.(zip|rar|7z|tar|gz|tgz|bz2|xz|iso|cab|arj|lzh|zst)(\?[^\s<>"'{}[\]|\\^`]*)?/gi;
+    // 正则与 constants.js buildArchiveUrlPattern 同一模板：扩展名来自 C.ARCHIVE_EXTENSIONS
+    // 并集，lookahead (?=[?#\s]|$) 后缀边界锚定（a.zip.bak 不再误配），捕获组含前导点。
+    var TEXT_ARCHIVE_PATTERN = new RegExp(
+      `https?:\\/\\/[^\\s<>"'{}[\\]|\\\\^\`]+(${C.ARCHIVE_EXTENSIONS.map(function(e) { return e.replace(/\./g, '\\.'); }).join('|')})(?=[?#\\s]|$)`,
+      'gi'
+    );
     var pageTextForScan = (document.body ? document.body.innerText : '') || '';
     var textArchiveUrls = [];
     var textArchiveSeen = new Set();
@@ -409,7 +402,7 @@
           textArchiveUrls.push({
             href: tnormalized.substring(0, 200),
             isCrossDomain: tparsed.hostname !== currentHost,
-            ext: '.' + tmatch[1].toLowerCase(),
+            ext: tmatch[1].toLowerCase(),   // 捕获组含前导点（如 .zip）
             source: 'text'
           });
         }
@@ -441,15 +434,19 @@
         uniqueTxtLinks.push(txtLinks[u]);
       }
     }
-    var txtToFetch = uniqueTxtLinks.slice(0, 3);
+    var txtToFetch = uniqueTxtLinks.slice(0, C.TXT_FETCH_LIMIT);
     var txtDerivedArchiveUrls = [];
 
     for (var t2 = 0; t2 < txtToFetch.length; t2++) {
       try {
-        var resp = await fetchWithTimeout(txtToFetch[t2], {}, 3000);
+        var resp = await fetchWithTimeout(txtToFetch[t2], {}, C.TXT_FETCH_TIMEOUT_MS);
         if (resp.ok) {
           var txtContent = await resp.text();
-          var ZIP_PATTERN = /https?:\/\/[^\s<>"'{}[\]|\\^`]+\.(zip|rar|7z|tar|gz|tgz|bz2|xz|iso|cab)(\?[^\s<>"'{}[\]|\\^`]*)?/gi;
+          // 与 TEXT_ARCHIVE_PATTERN 同模板（扩展名并集 + 后缀边界锚定）
+          var ZIP_PATTERN = new RegExp(
+            `https?:\\/\\/[^\\s<>"'{}[\\]|\\\\^\`]+(${C.ARCHIVE_EXTENSIONS.map(function(e) { return e.replace(/\./g, '\\.'); }).join('|')})(?=[?#\\s]|$)`,
+            'gi'
+          );
           var zmatch;
           while ((zmatch = ZIP_PATTERN.exec(txtContent)) !== null) {
             try {
@@ -457,7 +454,7 @@
               txtDerivedArchiveUrls.push({
                 href: zurl.href.substring(0, 200),
                 isCrossDomain: zurl.hostname !== currentHost,
-                ext: '.' + zmatch[1].toLowerCase(),
+                ext: zmatch[1].toLowerCase(),   // 捕获组含前导点（如 .zip）
                 source: 'txt-derived'
               });
             } catch (e) {}
@@ -517,9 +514,10 @@
 
     // CJK 统计与 background/icp-utils.js 保持同一判定口径。
     function isCJKChar(codePoint) {
-      return (codePoint >= 0x4E00 && codePoint <= 0x9FFF) ||
-        (codePoint >= 0x3400 && codePoint <= 0x4DBF) ||
-        (codePoint >= 0xF900 && codePoint <= 0xFAFF);
+      // Unicode 范围与 constants.js CJK_RANGES 一致（镜像至 content-constants.js）
+      return C.CJK_RANGES.some(function(range) {
+        return codePoint >= range[0] && codePoint <= range[1];
+      });
     }
 
     let cjkCount = 0;
@@ -531,7 +529,7 @@
     const cjkRatio = textLength > 0 ? cjkCount / textLength : 0;
     // 与 background/icp-utils.js 的 detectCJKContent 保持同一判定口径：
     // 放宽阈值以兼容中英混排的中文钓鱼页（详见 icp-utils.js 注释）。
-    const hasCJK = (cjkCount >= 20 && cjkRatio >= 0.02) || cjkCount >= 120;
+    const hasCJK = (cjkCount >= C.CJK_MIN_COUNT && cjkRatio >= C.CJK_MIN_RATIO) || cjkCount >= C.CJK_ABSOLUTE_COUNT;
 
     const lowerText = bodyText.toLowerCase();
     let promoKeywordMatchCount = 0;
@@ -539,7 +537,8 @@
       if (lowerText.includes(kw.toLowerCase())) promoKeywordMatchCount++;
     }
 
-    const emojiRegex = /\p{Emoji_Presentation}|\p{Emoji}️/gu;
+    // 显式 \p{Extended_Pictographic}（constants.js EMOJI_REGEX_SOURCE，替代 \p{Emoji} 宽匹配）
+    const emojiRegex = new RegExp(C.EMOJI_REGEX_SOURCE, 'gu');
     const emojiMatches = bodyText.match(emojiRegex) || [];
     const emojiCount = emojiMatches.length;
     const emojiDensity = textLength > 0 ? (emojiCount / textLength) * 1000 : 0;
@@ -620,12 +619,12 @@
   }
 
   function extractInlineScripts() {
-    var MAX_SCRIPT_LEN = 32 * 1024; // 32KB per script
+    var MAX_SCRIPT_LEN = C.MAX_INLINE_SCRIPT_LENGTH; // 32KB per script
     var scripts = document.querySelectorAll('script:not([src])');
     var results = [];
     for (var i = 0; i < scripts.length; i++) {
       var text = scripts[i].textContent || '';
-      if (text.length > 3) {
+      if (text.length > C.MIN_SCRIPT_LENGTH) {
         results.push({
           text: text.length > MAX_SCRIPT_LEN ? text.substring(0, MAX_SCRIPT_LEN) : text,
           lineCount: text.split('\n').length
@@ -669,14 +668,7 @@
 
   function collectIntermediatePageLinks() {
     // 标记可疑中间下载页：<a> 标签指向 HTML 页面，且链接文本含下载关键词
-    var INTERMEDIATE_KW = [
-      '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',
-      '安全下载', '点击下载', '直接下载', '本地下载', '官方下载',
-      'download now', 'free download', '立即安装', '一键安装',
-      '安装包', 'setup', 'install', 'get started',
-      '百度网盘', '蓝奏云', '天翼云', '123云盘', '阿里云盘',
-      '迅雷下载', 'bt下载', '磁力链接'
-    ];
+    var INTERMEDIATE_KW = C.INTERMEDIATE_PAGE_KEYWORDS || [];
     // 使用文件顶层内联常量 FILE_EXTENSIONS（压缩包 + 可执行文件全覆盖）
     var currentHost = window.location.hostname;
     var currentUrl = window.location.href;
@@ -741,7 +733,7 @@
       inlineScripts: extractInlineScripts(),
       metaRefreshUrls: extractMetaRefresh(),
       iframeSrcs: extractIframeSrcs(),
-      pageText: (document.body ? document.body.innerText : '').substring(0, 65536) || '',
+      pageText: (document.body ? document.body.innerText : '').substring(0, C.MAX_PAGE_TEXT_LENGTH) || '',
       intermediatePages: collectIntermediatePageLinks()
     };
   }
@@ -808,20 +800,9 @@
     var hasExternalResources = totalExternalResources > 0;
 
     // 框架标记检测：优先基于资源 URL 和 DOM 特征，避免依赖 Content Script 隔离世界中不可靠的 window.* 全局变量。
-    // 注：HTML marker 列表需与 utils/constants.js 中 FRAMEWORK_HTML_MARKERS 保持同步
-    const FRAMEWORK_HTML_MARKERS = [
-      'react', 'vue', 'angular', 'webpack', '__initial_state__',
-      '_next/', 'nuxt', 'svelte', 'jquery', 'bootstrap',
-      'node_modules', '.jsx', '.tsx', 'data-v-', 'ng-version',
-      '__vue__', '__react', 'redux', 'react-dom', 'vue-router',
-      'webpackjsonp', '__webpack_require__', '__nuxt', '__next'
-    ];
-
-    const FRAMEWORK_RESOURCE_MARKERS = [
-      '_next/', '/_next/', 'next/static', '_nuxt/', '/_nuxt/',
-      'react', 'react-dom', 'vue', 'vue-router', 'angular',
-      'svelte', 'jquery', 'bootstrap', 'webpack'
-    ];
+    // 列表来自 window.VT_CONSTANTS（= constants.js FRAMEWORK_HTML_MARKERS / FRAMEWORK_RESOURCE_MARKERS）
+    const FRAMEWORK_HTML_MARKERS = C.FRAMEWORK_HTML_MARKERS || [];
+    const FRAMEWORK_RESOURCE_MARKERS = C.FRAMEWORK_RESOURCE_MARKERS || [];
 
     const scriptSrcs = Array.from(document.querySelectorAll('script[src]'))
       .map(function(s) { return s.getAttribute('src') || ''; })
@@ -850,7 +831,7 @@
       if (document.querySelector('[x-data]')) domFrameworkHits.push('alpine-dom');
 
       const attrScanNodes = document.getElementsByTagName('*');
-      const attrScanLimit = Math.min(attrScanNodes.length, 2000);
+      const attrScanLimit = Math.min(attrScanNodes.length, C.ATTR_SCAN_LIMIT);
       for (let ai = 0; ai < attrScanLimit; ai++) {
         const attrs = attrScanNodes[ai].attributes || [];
         for (let aj = 0; aj < attrs.length; aj++) {
@@ -1071,7 +1052,7 @@
 
     // 6. TreeWalker 扫描全页面所有文本节点
     let count = 0;
-    const MAX_NODES = 15000; // 控制大型页面扫描成本，常规 ICP 文本通常位于页脚或备案相关元素
+    const MAX_NODES = C.MAX_NODES; // 控制大型页面扫描成本，常规 ICP 文本通常位于页脚或备案相关元素
     try {
       const walker = document.createTreeWalker(
         document.body || document.documentElement, NodeFilter.SHOW_TEXT,
@@ -1170,10 +1151,11 @@
         searchPos += kw.length;
       }
     }
+    // 下载意图密度计算的最小文本长度（100 字符，与 EMOJI_MIN_TEXT_LENGTH 数值巧合但语义独立）
     if (bodyText.length > 100) {
       downloadDensity = (kwHitCount / bodyText.length) * 1000;
     }
-    var needsDetection = anyLinkDownloadText || downloadDensity >= 2.0;
+    var needsDetection = anyLinkDownloadText || downloadDensity >= C.DOWNLOAD_DENSITY_THRESHOLD;
 
     var payload = {
       url: window.location.href, domain: window.location.hostname, title: document.title,
@@ -1208,7 +1190,7 @@
     }
 
     chrome.runtime.sendMessage({
-      type: 'PAGE_ANALYSIS_RESULT',
+      type: C.MSG_TYPES.PAGE_ANALYSIS_RESULT,
       payload: payload,
       timestamp: Date.now()
     }).catch(function() {});
@@ -1224,8 +1206,8 @@
   let _cachedCheckDeadLinks = true;
   async function getCheckDeadLinksSetting() {
     try {
-      const r = await chrome.storage.local.get('global_settings');
-      const gs = r.global_settings || {};
+      const r = await chrome.storage.local.get(C.STORAGE_KEYS.GLOBAL_SETTINGS);
+      const gs = r[C.STORAGE_KEYS.GLOBAL_SETTINGS] || {};
       _cachedCheckDeadLinks = gs.checkDeadLinks !== false;
     } catch (e) { /* ignore */ }
     return _cachedCheckDeadLinks;
@@ -1233,7 +1215,7 @@
 
   // 监听设置变更广播
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message && message.type === 'UPDATE_SETTINGS') {
+    if (message && message.type === C.MSG_TYPES.UPDATE_SETTINGS) {
       if (message.payload && message.payload.checkDeadLinks !== undefined) {
         _cachedCheckDeadLinks = message.payload.checkDeadLinks;
       }
@@ -1242,7 +1224,7 @@
 
   // 主消息监听
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message && message.type === 'REQUEST_PAGE_TEXT') {
+    if (message && message.type === C.MSG_TYPES.REQUEST_PAGE_TEXT) {
       (async () => {
         try {
           if (await shouldSkipPageAnalysis()) {
@@ -1277,8 +1259,9 @@
             var kw2 = DOWNLOAD_BUTTON_KW[dk2]; var sp2 = 0;
             while ((sp2 = btLower.indexOf(kw2, sp2)) !== -1) { kwHits++; sp2 += kw2.length; }
           }
+          // 下载意图密度计算的最小文本长度（100 字符，与 EMOJI_MIN_TEXT_LENGTH 数值巧合但语义独立）
           var density2 = bodyText.length > 100 ? (kwHits / bodyText.length) * 1000 : 0;
-          var needsDetection2 = anyLinkDL || density2 >= 2.0;
+          var needsDetection2 = anyLinkDL || density2 >= C.DOWNLOAD_DENSITY_THRESHOLD;
           sendResponse({
             success: true,
             pageMetrics: safeCollect(function() { return collectPageMetrics(bodyText); }, null),
@@ -1304,7 +1287,7 @@
 
   function runWhenIdle(fn) {
     if (typeof window.requestIdleCallback === 'function') {
-      window.requestIdleCallback(fn, { timeout: 1500 });
+      window.requestIdleCallback(fn, { timeout: C.IDLE_TIMEOUT_MS });
     } else {
       setTimeout(fn, 0);
     }
@@ -1324,9 +1307,9 @@
     _cachedCheckDeadLinks = await getCheckDeadLinksSetting();
     const authenticationPage = isAuthenticationPage();
     if (authenticationPage) disablePageNavigationGuard();
-    scheduleAnalysis(600, { checkDeadLinks: _cachedCheckDeadLinks && !authenticationPage });
+    scheduleAnalysis(C.SCAN_DELAY_FIRST_MS, { checkDeadLinks: _cachedCheckDeadLinks && !authenticationPage });
     // 二次扫描用于捕获懒加载内容，但跳过 HEAD 死链验证以降低页面和网络成本。
-    scheduleAnalysis(3500, { checkDeadLinks: false });
+    scheduleAnalysis(C.SCAN_DELAY_SECOND_MS, { checkDeadLinks: false });
   }
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') {

@@ -56,7 +56,11 @@ import {
   EMOJI_KEYWORD_MATCH_THRESHOLD, EMOJI_MIN_TEXT_LENGTH, EMOJI_DENSITY_MAX_SCORE,
   EMOJI_DENSITY_THRESHOLD_LOW, EMOJI_DENSITY_THRESHOLD_HIGH, PROMO_KEYWORDS,
   SCORE_DOWNLOAD_BLACKLIST, SCORE_DOWNLOAD_CROSS_DOMAIN, SCORE_DOWNLOAD_NEW_DOMAIN,
-  DOWNLOAD_VALID_DAYS_THRESHOLD, DOWNLOAD_CREATION_DAYS_THRESHOLD
+  DOWNLOAD_VALID_DAYS_THRESHOLD, DOWNLOAD_CREATION_DAYS_THRESHOLD,
+  SCORE_RULE_4A_DUPLICATE_LINK,
+  HIJACK_SCORE_CAP, GRAPH_TXT_BONUS_CAP, GRAPH_TXT_PER_LEVEL,
+  GRAPH_REDIRECT_CAP, GRAPH_REDIRECT_PER_HOP, GRAPH_EXE_CAP, GRAPH_EXE_PER_FILE,
+  ARCHIVE_MIME_TYPES, EMOJI_REGEX_SOURCE
 } from '../utils/constants.js';
 
 // ==================== 品牌顶级域名（Brand TLD，ICANN 授权企业运营） ====================
@@ -582,10 +586,10 @@ export class ScoringEngine {
           }
         }
 
-        // 官网劫持加分：每个非官方下载链接 +30（硬上限 60），不参与批量/嫌疑加权
+        // 官网劫持加分：每个非官方下载链接 +30（硬上限 HIJACK_SCORE_CAP），不参与批量/嫌疑加权
         let hijackScore = 0;
         if (resolveSetting('hijackDetection', true) && hijackCount > 0) {
-          hijackScore = Math.min(hijackCount * resolveSetting('rule2_hijackScore', SCORE_RULE_2_HIJACK), 60);
+          hijackScore = Math.min(hijackCount * resolveSetting('rule2_hijackScore', SCORE_RULE_2_HIJACK), HIJACK_SCORE_CAP);
         }
 
         // 3. 批量加权：≥阈值时基础分翻倍（仅 baseScore 参与，hijackScore/blacklistBonus 独立）
@@ -647,14 +651,14 @@ export class ScoringEngine {
 
       // 1. 多级 TXT 跳转：txtDepth > 1 表示存在 TXT→TXT→...→ZIP 链
       if (resourceGraph.txtDepth > 1) {
-        const txtBonus = Math.min(15, (resourceGraph.txtDepth - 1) * 8);
+        const txtBonus = Math.min(GRAPH_TXT_BONUS_CAP, (resourceGraph.txtDepth - 1) * GRAPH_TXT_PER_LEVEL);
         graphBonus += txtBonus;
         graphBonusParts.push('TXT' + resourceGraph.txtDepth + '级跳转');
       }
 
       // 2. 重定向链：存在 HTTP 30x 重定向
       if (resourceGraph.redirectChain && resourceGraph.redirectChain.length > 0) {
-        const redirectBonus = Math.min(10, resourceGraph.redirectChain.length * 3);
+        const redirectBonus = Math.min(GRAPH_REDIRECT_CAP, resourceGraph.redirectChain.length * GRAPH_REDIRECT_PER_HOP);
         graphBonus += redirectBonus;
         graphBonusParts.push(resourceGraph.redirectChain.length + '次重定向');
       }
@@ -663,7 +667,7 @@ export class ScoringEngine {
       if (resolveSetting('detectNonArchiveFiles', false) &&
           resourceGraph.discoveredExecutables && resourceGraph.discoveredExecutables.length > 0) {
         const exeCount = resourceGraph.discoveredExecutables.length;
-        const exeBonus = Math.min(20, exeCount * 5);
+        const exeBonus = Math.min(GRAPH_EXE_CAP, exeCount * GRAPH_EXE_PER_FILE);
         graphBonus += exeBonus;
         graphBonusParts.push(exeCount + '个可执行文件');
       }
@@ -958,7 +962,9 @@ export class ScoringEngine {
         const n = dup.elementCount;
         const isSuspiciousTarget = dup.isCrossDomain || dup.isDownloadLink;
         if (n >= 10 && isSuspiciousTarget) {
-          const dupScore = Math.floor(Math.min(20, 4 * Math.log2(n))); // 封顶 20（原 30）
+          // 注：触发阈值为 10（不取 constants.js DUPLICATE_LINK_THRESHOLD=4，见上注释"仅可疑目标才计分"）；
+          // 得分封顶用 SCORE_RULE_4A_DUPLICATE_LINK（20）
+          const dupScore = Math.floor(Math.min(SCORE_RULE_4A_DUPLICATE_LINK, 4 * Math.log2(n)));
           partAScore += dupScore;
           const kind = dup.isDownloadLink ? '下载' : '跨域';
           partAReasons.push(n + '个元素指向同一' + kind + '链接');
@@ -1196,10 +1202,10 @@ export class ScoringEngine {
    *   1. 文本长度 < 100 字符 → 跳过（0 分）
    *   2. 推广关键词匹配数 < 阈值（默认 1） → 跳过（0 分，非推广页面）
    *   3. 计算 Emoji 密度 density = (emojiCount / textLength) * 1000
-   *   4. 分段线性映射：
+   *   4. 分段线性映射（上限取 EMOJI_DENSITY_MAX_SCORE=20，与 constants.js 一致）：
    *        density < 2.0          → 0 分
-   *        2.0 ≤ density < 10.0   → (density - 2) / 8 * 30
-   *        density ≥ 10.0          → 30 分（封顶）
+   *        2.0 ≤ density < 10.0   → (density - 2) / 8 * 20
+   *        density ≥ 10.0          → 20 分（封顶）
    *
    * @param {string} pageText - 页面文本内容（兼容旧消息）
    * @param {Object} textSignals - 内容脚本本地计算的派生文本指标
@@ -1265,8 +1271,8 @@ export class ScoringEngine {
     }
 
     // 3. Emoji 密度计算
-    // 使用 Unicode 属性转义，覆盖常见 emoji（包括肤色修饰符、零宽连接符序列）
-    const emojiRegex = /\p{Emoji_Presentation}|\p{Emoji}️/gu;
+    // 使用 Unicode 属性转义（源串来自 constants.js EMOJI_REGEX_SOURCE，显式 \p{Extended_Pictographic}）
+    const emojiRegex = new RegExp(EMOJI_REGEX_SOURCE, 'gu');
     const emojiMatches = pageText.match(emojiRegex) || [];
     const emojiCount = emojiMatches.length;
     result.emojiCount = emojiCount;
@@ -1318,9 +1324,9 @@ export class ScoringEngine {
   /**
    * 基于域名注册天数对已累积的可疑分数进行抵消。
    *
-   * 减分公式（x = creation_days）：
-   *   x < 180             → bonus = 0（新域名不减分）
-   *   180 ≤ x < 730       → bonus = floor(MAX_BONUS * (x - 180) / (730 - 180))
+   * 减分公式（x = creation_days；阈值取自 constants.js DOMAIN_AGE_BONUS_MIN_DAYS/MAX_DAYS）：
+   *   x < 365             → bonus = 0（新域名不减分）
+   *   365 ≤ x < 730       → bonus = floor(MAX_BONUS * (x - 365) / (730 - 365))
    *   x ≥ 730             → bonus = MAX_BONUS（长期注册域名获最大减分）
    *
    * 执行条件：仅当 preliminaryScore >= resolveSetting('domainAgeBonus_scoreThreshold', DOMAIN_AGE_BONUS_SCORE_THRESHOLD) 时调用。
@@ -1508,27 +1514,8 @@ export class ScoringEngine {
       } catch (e) { /* URL解析失败，跳过此层检测 */ }
     }
 
-    // 第三层：MIME类型检测（17种常见压缩包MIME类型）
+    // 第三层：MIME类型检测（17种常见压缩包MIME类型，表来自 constants.js ARCHIVE_MIME_TYPES）
     if (mime) {
-      const ARCHIVE_MIME_TYPES = [
-        'application/zip',
-        'application/x-rar-compressed',
-        'application/x-7z-compressed',
-        'application/x-tar',
-        'application/gzip',
-        'application/x-bzip2',
-        'application/x-xz',
-        'application/x-compress',
-        'application/x-iso9660-image',
-        'application/vnd.ms-cab-compressed',
-        'application/x-arj',
-        'application/x-lzh',
-        'application/zstd',
-        'application/x-compressed-tar',
-        'application/x-gzip',
-        'application/x-bzip',
-        'application/x-lzma'
-      ];
       if (ARCHIVE_MIME_TYPES.includes(mime.toLowerCase())) return true;
     }
 

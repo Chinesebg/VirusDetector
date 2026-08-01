@@ -47,7 +47,7 @@ test('the MAIN-world guard exits before patching authentication pages', () => {
   const gate = navigationGuard.indexOf('isSensitiveAuthenticationUrl(window.location.href)');
   const openPatch = navigationGuard.indexOf('window.open =');
 
-  assert.deepEqual(mainWorldScripts, ['content/navigation-guard.js']);
+  assert.deepEqual(mainWorldScripts, ['utils/content-constants.js', 'content/navigation-guard.js']);
   assert.notEqual(gate, -1, 'navigation guard must detect authentication URLs');
   assert.notEqual(openPatch, -1, 'ordinary pages retain the original navigation guard');
   assert.ok(gate < openPatch, 'authentication URLs must exit before browser APIs are patched');
@@ -92,7 +92,7 @@ test('ordinary page probes retain their count but cannot carry login credentials
     '// ==================== 规则五：页面度量采集'
   );
 
-  assert.match(linkCollector, /uniqueCandidates\.slice\(0,\s*5\)/);
+  assert.match(linkCollector, /uniqueCandidates\.slice\(0,\s*C\.DEAD_LINK_CHECK_MAX\)/);
   assert.match(linkCollector, /method:\s*['"]HEAD['"]/);
   assert.match(linkCollector, /credentials:\s*['"]omit['"]/);
   assert.match(linkCollector, /referrerPolicy:\s*['"]no-referrer['"]/);
@@ -131,10 +131,10 @@ test('authentication pages are excluded before the full blocker is injected', ()
 });
 
 test('dynamic login interaction disables both navigation and download blockers', () => {
-  assert.match(contentScript, /type:\s*['"]AUTH_INTERACTION_DETECTED['"]/);
+  assert.match(contentScript, /type:\s*C\.MSG_TYPES\.AUTH_INTERACTION_DETECTED/);
   const handler = sourceBetween(
     serviceWorker,
-    "case 'AUTH_INTERACTION_DETECTED':",
+    'case MSG_TYPES.AUTH_INTERACTION_DETECTED:',
     'case MSG_TYPES.PAGE_ANALYSIS_RESULT:'
   );
 

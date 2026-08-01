@@ -57,7 +57,7 @@ export class SiteBlacklist {
    */
   static async isBlacklisted(domain) {
     if (!domain) return false;
-    const normalized = domain.toLowerCase();
+    const normalized = domain.toLowerCase().trim();
     // 精确匹配 + 主域名匹配（防止子域名绕过）
     const mainDomain = UrlUtils.getMainDomain(normalized);
     const blacklist = await this.getAll();
@@ -72,7 +72,7 @@ export class SiteBlacklist {
   static async getEntry(domain) {
     if (!domain) return null;
     const blacklist = await this.getAll();
-    const normalized = domain.toLowerCase();
+    const normalized = domain.toLowerCase().trim();
     const mainDomain = UrlUtils.getMainDomain(normalized);
     return blacklist[normalized] || blacklist[mainDomain] || null;
   }
@@ -90,7 +90,7 @@ export class SiteBlacklist {
   static async add(domain, info = {}) {
     if (!domain) return;
 
-    const normalized = domain.toLowerCase();
+    const normalized = domain.toLowerCase().trim();
     const blacklist = await this.getAll();
     const now = Date.now();
 

@@ -12,7 +12,7 @@ import { BaseResolver } from './base-resolver.js';
 import {
   RESOURCE_TYPES, SOURCE_TYPES,
   LOCATION_PATTERNS, WINDOW_OPEN_PATTERN, FETCH_PATTERNS,
-  STRING_URL_PATTERN, URL_PATTERN
+  STRING_URL_PATTERN, URL_PATTERN, MIN_SCRIPT_LENGTH
 } from '../config.js';
 
 export class ExternalScriptResolver extends BaseResolver {
@@ -29,7 +29,7 @@ export class ExternalScriptResolver extends BaseResolver {
       return discovered;
     }
 
-    // 获取外部 JS 内容
+    // 获取外部 JS 内容（大小限制来自 constants.js RESOLVER_MAX_JSON_SIZE 同值，语义独立）
     let content;
     try {
       content = await context.fetchFn(node.url, { sizeLimit: 128 * 1024 }); // 128KB
@@ -38,7 +38,7 @@ export class ExternalScriptResolver extends BaseResolver {
       return discovered;
     }
 
-    if (!content || content.length < 3) return discovered;
+    if (!content || content.length < MIN_SCRIPT_LENGTH) return discovered;
 
     const pageUrl = node.parentUrl || context.pageUrl;
     const foundUrls = new Set();

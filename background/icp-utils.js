@@ -8,6 +8,7 @@
 // 这些是全球知名非中国站点，确定不需要ICP备案。
 // 名单已统一迁移至 utils/exemptions/index.js（导出 ICP_EXEMPT_DOMAINS），便于集中维护、避免重复登记。
 import { ICP_EXEMPT_DOMAINS } from '../utils/exemptions/index.js';
+import { CJK_RANGES, CJK_MIN_COUNT, CJK_MIN_RATIO, CJK_ABSOLUTE_COUNT } from '../utils/constants.js';
 
 /**
  * 从 domain-database 中动态提取非中国品牌的官方域名并加入豁免集合
@@ -21,18 +22,7 @@ export function registerNonChineseBrandDomains(domains) {
 }
 
 // ==================== CJK 字符检测 ====================
-
-/**
- * CJK 统一表意文字 Unicode 范围
- * - U+4E00–U+9FFF   CJK 统一表意文字（常用汉字）
- * - U+3400–U+4DBF   CJK 扩展 A
- * - U+F900–U+FAFF   CJK 兼容表意文字
- */
-const CJK_RANGES = [
-  [0x4E00, 0x9FFF],
-  [0x3400, 0x4DBF],
-  [0xF900, 0xFAFF]
-];
+// CJK_RANGES 来自 utils/constants.js（与 content-script 同一份，避免口径漂移）
 
 function isCJKChar(codePoint) {
   return CJK_RANGES.some(([lo, hi]) => codePoint >= lo && codePoint <= hi);
@@ -353,11 +343,11 @@ export class IcpUtils {
     const cjkRatio = cjkCount / totalChars;
     // 放宽判定：中文钓鱼页常中英混排（大量英文按钮/URL/版本号），
     // 原 0.08 占比阈值会把「有中文但英文更多」的页面误判为非中文，
-    // 进而被规则三当成外国站跳过备案检查。改为：
-    //   · ≥20 个汉字且占比≥0.02  → 视为中文页面
-    //   · 或 ≥120 个汉字（密度很高，无论如何视为中文）
+    // 进而被规则三当成外国站跳过备案检查。改为（阈值来自 constants.js，与 content-script 同口径）：
+    //   · ≥CJK_MIN_COUNT(20) 个汉字且占比≥CJK_MIN_RATIO(0.02)  → 视为中文页面
+    //   · 或 ≥CJK_ABSOLUTE_COUNT(120) 个汉字（密度很高，无论如何视为中文）
     // 纯英文外国站（如 revouninstaller.com 仅 7 汉字）仍正确判为非中文。
-    const hasCJK = (cjkCount >= 20 && cjkRatio >= 0.02) || cjkCount >= 120;
+    const hasCJK = (cjkCount >= CJK_MIN_COUNT && cjkRatio >= CJK_MIN_RATIO) || cjkCount >= CJK_ABSOLUTE_COUNT;
 
     return { hasCJK, cjkCount, cjkRatio };
   }

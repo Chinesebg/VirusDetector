@@ -3,7 +3,7 @@
 > Chrome/Edge 浏览器扩展，实时检测银狐木马（Silver Fox Trojan）钓鱼与仿冒网站。
 
 [![Manifest](https://img.shields.io/badge/Manifest-V3-blue)](https://developer.chrome.com/docs/extensions/mv3/)
-[![Version](https://img.shields.io/badge/Version-2.5.1-orange)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.5.2-orange)](https://github.com)
 
 ---
 
@@ -115,8 +115,9 @@ VirusDetector/
 │   ├── download-confirm.css           # 下载确认窗口样式
 │   └── download-confirm.js            # 下载确认控制
 ├── utils/
-│   ├── constants.js                   # 评分常量、阈值配置
-│   ├── settings-schema.js             # 设置系统单一事实来源
+│   ├── constants.js                   # 全局常量唯一真源（评分阈值、扩展名并集、消息/存储键、超时、URL）
+│   ├── content-constants.js           # 经典脚本常量镜像（content_scripts/首帧同步脚本经 window.VT_CONSTANTS 读取）
+│   ├── settings-schema.js             # 设置系统单一事实来源（默认值由 constants.js 派生）
 │   ├── url-utils.js                   # 域名解析、PSL 主域提取
 │   ├── trusted-platforms.js           # 可信 UGC 平台白名单
 │   ├── trusted-download-hosts.js      # 可信下载平台白名单

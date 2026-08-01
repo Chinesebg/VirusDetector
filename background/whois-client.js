@@ -22,14 +22,14 @@
  *   - RDAP 404（域名未注册）不缓存
  *
  * WhoisCX API 规范：
- *   - 接口地址：GET http://api.whoiscx.com/whois/?domain={domain}
- *   - ⚠️ 仅支持 HTTP（不支持 HTTPS）
+ *   - 接口地址：GET https://api.whoiscx.com/whois/?domain={domain}（支持 HTTPS，见 constants.js WHOIS_API_URL）
  *   - 响应格式：application/json
  *   - 频率限制：2 秒/次（通过串行化请求保证）
  */
 
 import {
   WHOIS_API_URL, WHOIS_CACHE_TTL, WHOIS_API_TIMEOUT,
+  MIN_WHOIS_INTERVAL_MS, WHOIS_INTERVAL_FLOOR_MS, STORAGE_KEYS, DAY_MS,
   VERSION
 } from '../utils/constants.js';
 import { RdapClient } from './rdap-client.js';
@@ -52,15 +52,15 @@ const _cache = new Map();
 /** 上次 WhoisCX API 请求完成的时间戳（用于速率限制） */
 let _lastWhoisRequestTime = 0;
 
-/** WhoisCX API 最小请求间隔（毫秒），保护免费 API 不被封禁 */
-const MIN_WHOIS_INTERVAL_DEFAULT = 2100;
+/** WhoisCX API 最小请求间隔（毫秒），保护免费 API 不被封禁（= constants.js MIN_WHOIS_INTERVAL_MS） */
+const MIN_WHOIS_INTERVAL_DEFAULT = MIN_WHOIS_INTERVAL_MS;
 
 /** 从用户设置读取速率限制间隔，回退到默认值 */
 async function _getWhoisInterval() {
   try {
-    const r = await chrome.storage.local.get('global_settings');
-    const gs = r.global_settings || {};
-    if (gs.whois_apiIntervalMs && gs.whois_apiIntervalMs >= 1000) return gs.whois_apiIntervalMs;
+    const r = await chrome.storage.local.get(STORAGE_KEYS.GLOBAL_SETTINGS);
+    const gs = r[STORAGE_KEYS.GLOBAL_SETTINGS] || {};
+    if (gs.whois_apiIntervalMs && gs.whois_apiIntervalMs >= WHOIS_INTERVAL_FLOOR_MS) return gs.whois_apiIntervalMs;
   } catch (e) { /* ignore */ }
   return MIN_WHOIS_INTERVAL_DEFAULT;
 }
@@ -135,7 +135,7 @@ function _parseDaysFromWhoisCxTime(timeStr) {
     if (isNaN(creationDate.getTime())) return -1;
     const diffMs = Date.now() - creationDate.getTime();
     if (diffMs < 0) return -1;
-    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    return Math.floor(diffMs / DAY_MS);
   } catch (e) {
     return -1;
   }

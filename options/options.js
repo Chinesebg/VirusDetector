@@ -7,21 +7,24 @@
  * @module options
  */
 
-import { SETTINGS_DEFAULTS, SECTIONS, SENSITIVITY_PRESETS, SCHEMA_VERSION, validateSetting } from '../utils/settings-schema.js';
-import { STORAGE_KEYS, MSG_TYPES, VERSION, UPDATE_CHANNEL } from '../utils/constants.js';
+import { SETTINGS_DEFAULTS, SECTIONS, SENSITIVITY_PRESETS, SCHEMA_VERSION, validateSetting, migrateSettings } from '../utils/settings-schema.js';
+import {
+  STORAGE_KEYS, MSG_TYPES, VERSION, UPDATE_CHANNEL,
+  UI_KEYS, ADVANCED_ONLY_SECTIONS, PRESET_LEVELS,
+  TOAST_DURATION_MS, GITHUB_REPO_PAGE, GITHUB_NEW_ISSUE_URL, GITHUB_RELEASES_PAGE
+} from '../utils/constants.js';
 
 class SettingsApp {
   constructor() {
     /** @type {Object} 当前设置（运行时状态） */
     this.settings = { ...SETTINGS_DEFAULTS };
     /** @type {string} 当前显示的 section ID */
-    this._activeSection = localStorage.getItem('vt_activeSection') || 'general';
+    this._activeSection = localStorage.getItem(UI_KEYS.ACTIVE_SECTION) || 'general';
     /** @type {'basic'|'advanced'} 当前模式 */
-    this._mode = localStorage.getItem('vt_mode') || 'basic';
+    this._mode = localStorage.getItem(UI_KEYS.MODE) || 'basic';
     // 基本模式下不在高级专属分区
     if (this._mode === 'basic') {
-      const advancedOnly = ['thresholds', 'download', 'blacklist'];
-      if (advancedOnly.includes(this._activeSection)) {
+      if (ADVANCED_ONLY_SECTIONS.includes(this._activeSection)) {
         this._activeSection = 'general';
       }
     }
@@ -53,15 +56,16 @@ class SettingsApp {
     try {
       const r = await chrome.storage.local.get(STORAGE_KEYS.GLOBAL_SETTINGS);
       const stored = r[STORAGE_KEYS.GLOBAL_SETTINGS] || {};
-      // 合并：新键用默认值，已存储的键覆盖默认值
-      this.settings = { ...SETTINGS_DEFAULTS, ...stored };
-      // 同步 localStorage 主题镜像（确保后续页面加载无闪烁）
-      try { localStorage.setItem('vt_theme', this.settings.theme || 'dark'); } catch (e) { }
-      // Schema 迁移检测
-      if (stored._schemaVersion !== SCHEMA_VERSION) {
-        console.log('[Settings] Schema 版本变更:', stored._schemaVersion, '→', SCHEMA_VERSION);
-        // 未来在此处添加迁移逻辑
+      // Schema 迁移（如 v1→v2 修正 apihz 键名）：有变更时写回存储
+      const migrated = migrateSettings(stored);
+      if (migrated !== stored) {
+        console.log('[Settings] Schema 迁移:', stored._schemaVersion ?? 1, '→', SCHEMA_VERSION);
+        await chrome.storage.local.set({ [STORAGE_KEYS.GLOBAL_SETTINGS]: migrated });
       }
+      // 合并：新键用默认值，已存储的键覆盖默认值
+      this.settings = { ...SETTINGS_DEFAULTS, ...migrated };
+      // 同步 localStorage 主题镜像（确保后续页面加载无闪烁）
+      try { localStorage.setItem(UI_KEYS.THEME, this.settings.theme || 'dark'); } catch (e) { }
     } catch (e) {
       console.error('[Settings] 加载设置失败:', e);
       this.settings = { ...SETTINGS_DEFAULTS };
@@ -77,7 +81,7 @@ class SettingsApp {
     try {
       await chrome.storage.local.set({ [STORAGE_KEYS.GLOBAL_SETTINGS]: toStore });
       // 同步写入 localStorage 以便页面加载时无闪烁读取主题
-      try { localStorage.setItem('vt_theme', this.settings.theme || 'dark'); } catch (e) { }
+      try { localStorage.setItem(UI_KEYS.THEME, this.settings.theme || 'dark'); } catch (e) { }
       this._broadcastUpdate();
       console.log('[Settings] 已自动保存');
     } catch (e) {
@@ -224,8 +228,8 @@ class SettingsApp {
       }
 
       case 'preset':
-        const presetValue = value || 'medium';
-        const steps = ['low', 'medium', 'high'];
+        const presetValue = value || PRESET_LEVELS[1];   // 'medium'
+        const steps = PRESET_LEVELS.slice(0, 3);         // ['low', 'medium', 'high']
         const labels = { low: '低', medium: '中', high: '高' };
         const descs = { low: '仅高风险', medium: '均衡检测', high: '最严格' };
         return `
@@ -350,7 +354,7 @@ class SettingsApp {
   _isInputDisabled(setting) {
     if (setting.type !== 'number') return false;
     const preset = this.settings.sensitivityPreset || SETTINGS_DEFAULTS.sensitivityPreset;
-    if (preset === 'medium') return false;
+    if (preset === PRESET_LEVELS[1]) return false;   // 'medium'（无覆盖，均可用）
     // 检查此 key 是否在预设的 overrides 中
     const overrides = SENSITIVITY_PRESETS[preset]?.overrides || {};
     return setting.key in overrides;
@@ -428,7 +432,7 @@ class SettingsApp {
     }
 
     // 灵敏度预设滑块拖拽
-    const STEPS = ['low', 'medium', 'high'];
+    const STEPS = PRESET_LEVELS.slice(0, 3);   // ['low', 'medium', 'high']
     let dragging = false;
 
     const getRatioFromX = (clientX) => {
@@ -609,7 +613,7 @@ class SettingsApp {
     const fill = document.querySelector('.preset-fill');
     const labels = document.querySelectorAll('.preset-label');
     if (!thumb || !fill) return;
-    const steps = ['low', 'medium', 'high'];
+    const steps = PRESET_LEVELS.slice(0, 3);   // ['low', 'medium', 'high']
     const idx = steps.indexOf(value);
     const pct = idx / (steps.length - 1) * 100;
     thumb.style.left = pct + '%';
@@ -623,13 +627,12 @@ class SettingsApp {
   _setMode(mode) {
     if (this._mode === mode) return;
     this._mode = mode;
-    try { localStorage.setItem('vt_mode', mode); } catch (e) { }
+    try { localStorage.setItem(UI_KEYS.MODE, mode); } catch (e) { }
     // 切回基础模式时，若当前在高级专属分区则跳转到常规
     if (mode === 'basic') {
-      const advancedOnly = ['thresholds', 'download', 'blacklist'];
-      if (advancedOnly.includes(this._activeSection)) {
+      if (ADVANCED_ONLY_SECTIONS.includes(this._activeSection)) {
         this._activeSection = 'general';
-        try { localStorage.setItem('vt_activeSection', 'general'); } catch (e) { }
+        try { localStorage.setItem(UI_KEYS.ACTIVE_SECTION, 'general'); } catch (e) { }
       }
     }
     this._applyModeToDom();
@@ -674,7 +677,7 @@ class SettingsApp {
   _switchSection(sectionId) {
     this._closeDrawer();
     this._activeSection = sectionId;
-    try { localStorage.setItem('vt_activeSection', sectionId); } catch (e) { }
+    try { localStorage.setItem(UI_KEYS.ACTIVE_SECTION, sectionId); } catch (e) { }
     this._renderSection(sectionId);
     // 高亮侧栏
     document.querySelectorAll('.nav-item').forEach(el => {
@@ -751,7 +754,7 @@ class SettingsApp {
     try {
       const all = await chrome.storage.local.get(null);
       const keysToRemove = Object.keys(all).filter(k =>
-        k.startsWith('domain_cache_') || k.startsWith('icp_api_v1_')
+        k.startsWith(STORAGE_KEYS.DOMAIN_CACHE) || k.startsWith(STORAGE_KEYS.ICP_CACHE_PREFIX)
       );
       if (keysToRemove.length > 0) {
         await chrome.storage.local.remove(keysToRemove);
@@ -769,7 +772,7 @@ class SettingsApp {
       const all = await chrome.storage.local.get(null);
       // 保留 global_settings（将被重置）
       const keysToRemove = Object.keys(all).filter(k =>
-        !k.startsWith('global_settings')  // 保留设置键，仅重置
+        !k.startsWith(STORAGE_KEYS.GLOBAL_SETTINGS)  // 保留设置键，仅重置
       );
       if (keysToRemove.length > 0) {
         await chrome.storage.local.remove(keysToRemove);
@@ -846,7 +849,7 @@ class SettingsApp {
     setTimeout(() => {
       toast.classList.add('removing');
       toast.addEventListener('animationend', () => toast.remove());
-    }, 3000);
+    }, TOAST_DURATION_MS);
   }
 
   // ==================== 白名单编辑 ====================
@@ -927,7 +930,7 @@ class SettingsApp {
       // 通知 Service Worker 刷新内存缓存
       try {
         await chrome.runtime.sendMessage({
-          type: 'BULK_UPDATE_WHITELIST',
+          type: MSG_TYPES.BULK_UPDATE_WHITELIST,
           payload: { domains }
         });
       } catch (e) { /* SW 可能不在运行 */ }
@@ -1476,15 +1479,15 @@ class SettingsApp {
               项目链接
             </h3>
             <div class="about-links">
-              <a class="about-link" href="https://github.com/Lolitide/VirusDetector" target="_blank" rel="noopener">
+              <a class="about-link" href="${GITHUB_REPO_PAGE}" target="_blank" rel="noopener">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:-2px;margin-right:3px;"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
                 GitHub 仓库
               </a>
-              <a class="about-link" href="https://github.com/Lolitide/VirusDetector/issues/new/choose" target="_blank" rel="noopener">
+              <a class="about-link" href="${GITHUB_NEW_ISSUE_URL}" target="_blank" rel="noopener">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                 反馈问题
               </a>
-              <a class="about-link" href="https://github.com/Lolitide/VirusDetector/releases" target="_blank" rel="noopener">
+              <a class="about-link" href="${GITHUB_RELEASES_PAGE}" target="_blank" rel="noopener">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                 更新日志
               </a>
@@ -1523,12 +1526,12 @@ SettingsApp.prototype._loadStorageStats = async function () {
     const percent = ((bytesInUse / quota) * 100).toFixed(1);
 
     const cacheKeys = Object.keys(all).filter(k =>
-      k.startsWith('domain_cache_')
+      k.startsWith(STORAGE_KEYS.DOMAIN_CACHE)
     );
     const icpApiCacheKeys = Object.keys(all).filter(k =>
-      k.startsWith('icp_api_v1_')
+      k.startsWith(STORAGE_KEYS.ICP_CACHE_PREFIX)
     );
-    const tabStateKeys = Object.keys(all).filter(k => k.startsWith('tab_state_'));
+    const tabStateKeys = Object.keys(all).filter(k => k.startsWith(STORAGE_KEYS.TAB_STATE_PREFIX));
     const whitelist = all[STORAGE_KEYS.WHITELIST] || [];
     const blacklist = all[STORAGE_KEYS.DOWNLOAD_BLACKLIST] || [];
     const siteBlacklist = all[STORAGE_KEYS.SITE_BLACKLIST] || [];

@@ -8,7 +8,7 @@
  */
 
 import { BaseResolver } from './base-resolver.js';
-import { RESOURCE_TYPES, SOURCE_TYPES } from '../config.js';
+import { RESOURCE_TYPES, SOURCE_TYPES, MAX_REDIRECTS } from '../config.js';
 
 export class RedirectResolver extends BaseResolver {
   canHandle(node) {
@@ -24,7 +24,7 @@ export class RedirectResolver extends BaseResolver {
       return discovered;
     }
 
-    const maxRedirects = 5;
+    const maxRedirects = MAX_REDIRECTS;   // 来自 constants.js
     let currentUrl = node.url;
     const visitedInChain = new Set();
 

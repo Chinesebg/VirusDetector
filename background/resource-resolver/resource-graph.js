@@ -7,6 +7,7 @@
  * @module resource-resolver/resource-graph
  */
 
+import { ARCHIVE_EXTENSIONS, EXECUTABLE_EXTENSIONS } from './config.js';
 
 // ==================== ResourceNode ====================
 
@@ -315,23 +316,15 @@ function extractExtension(url) {
 }
 
 /**
- * 懒加载 config 模块，避免循环依赖
+ * 懒加载 config 模块（config.js 不依赖本文件，无循环依赖；保留函数以最小化调用方改动）
  */
 let _config = null;
 function requireConfig() {
   if (!_config) {
-    // 使用动态 import 的同构替代：直接内联需要的常量
+    // 扩展名列表来自 config.js（其值派生自 constants.js 并集，唯一真源）
     _config = {
-      ARCHIVE_EXTENSIONS: [
-        '.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.tgz',
-        '.bz2', '.xz', '.z', '.iso', '.cab', '.arj', '.lzh',
-        '.tar.bz2', '.tar.xz', '.gz2', '.zst', '.img', '.dmg'
-      ],
-      EXECUTABLE_EXTENSIONS: [
-        '.exe', '.msi', '.apk', '.pkg', '.appx', '.deb', '.rpm',
-        '.bat', '.cmd', '.ps1', '.vbs', '.scr', '.jar',
-        '.bin', '.run', '.sh', '.dmg'
-      ]
+      ARCHIVE_EXTENSIONS,
+      EXECUTABLE_EXTENSIONS
     };
   }
   return _config;

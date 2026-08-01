@@ -26,6 +26,10 @@
  */
 
 // ---- 配置 ----
+// ⚠️ 本 Worker 独立部署（wrangler deploy），无法 import 扩展的 utils/constants.js。
+// 下列值须与 utils/constants.js 保持一致：
+//   GITHUB_RELEASES_API        ↔ constants.js GITHUB_RELEASES_API_URL
+//   LABEL_MAP 键（false_positive/confirmed_phish）↔ constants.js REPORT_TYPES
 const GITHUB_REPO_OWNER = 'Lolitide';
 const GITHUB_REPO_NAME = 'VirusDetector';
 const GITHUB_RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`;

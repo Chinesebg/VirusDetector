@@ -27,37 +27,22 @@
 
 // ==================== 引导文件缓存 ====================
 
-/** IANA RDAP DNS 引导文件 URL */
-const RDAP_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
-
-/**
- * RDAP/WHOIS 代理查询服务 URL（备用方案）。
- *
- * 用途：
- *   1. 对没有公开 RDAP 服务的 TLD（如 .cn）作为【主查询】，
- *      该服务会自动回退到注册局 WHOIS 并返回结构化 JSON。
- *   2. 对其他 TLD 直连 RDAP 失败（网络/超时/服务器错误）时作为【备用】。
- *
- * 返回格式（两种）：
- *   - WHOIS 路径：{ success, data: { protocol:"whois", whoisData:{ "Created Date", "Expiry Date", ... } } }
- *   - RDAP 路径：{ success, data: { levels:{ registry:{ ...标准 RDAP 对象... } } } }
- */
-const RDAP_PROXY_URL = 'https://rdap.ss/api/query?q=';
+import {
+  RDAP_BOOTSTRAP_URL, RDAP_PROXY_URL, RDAP_REQUEST_TIMEOUT,
+  WHOIS_INTERVAL_FLOOR_MS, STORAGE_KEYS, DAY_MS
+} from '../utils/constants.js';
 
 /** 引导文件缓存有效期（毫秒），24小时。该文件通常每日 UTC 22:00 更新 */
-const BOOTSTRAP_CACHE_TTL = 24 * 60 * 60 * 1000;
-
-/** RDAP 请求超时（毫秒） */
-const RDAP_REQUEST_TIMEOUT_DEFAULT = 10000;
+const BOOTSTRAP_CACHE_TTL = DAY_MS;
 
 /** 从用户设置读取 API 超时，回退到默认值 */
 async function _getApiTimeout() {
   try {
-    const r = await chrome.storage.local.get('global_settings');
-    const gs = r.global_settings || {};
-    if (gs.api_timeoutMs && gs.api_timeoutMs >= 1000) return gs.api_timeoutMs;
+    const r = await chrome.storage.local.get(STORAGE_KEYS.GLOBAL_SETTINGS);
+    const gs = r[STORAGE_KEYS.GLOBAL_SETTINGS] || {};
+    if (gs.api_timeoutMs && gs.api_timeoutMs >= WHOIS_INTERVAL_FLOOR_MS) return gs.api_timeoutMs;
   } catch (e) { /* ignore */ }
-  return RDAP_REQUEST_TIMEOUT_DEFAULT;
+  return RDAP_REQUEST_TIMEOUT;
 }
 
 /**
@@ -369,7 +354,7 @@ function _daysFromNow(dateStr) {
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) return -1;
     const diffMs = Date.now() - date.getTime();
-    if (diffMs < 0 && Math.abs(diffMs) > 86400000) {
+    if (diffMs < 0 && Math.abs(diffMs) > DAY_MS) {
       // 如果日期在未来超过 1 天，视为过期时间且天数差为负
       return Math.ceil(-diffMs / (1000 * 60 * 60 * 24));
     }

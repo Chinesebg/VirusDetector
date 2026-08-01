@@ -5,6 +5,10 @@
  * - 从 URL 参数读取检测结果并渲染警告界面
  * - 处理关闭危险页面、跳转安全页面的用户操作
  */
+import {
+  MSG_TYPES, REPORT_TYPES, WARNING_AUTO_CLOSE_SECONDS, PHISH_CONFIRM_TIMEOUT_MS
+} from '../utils/constants.js';
+
 (function () {
   'use strict';
 
@@ -108,8 +112,7 @@
   // ---- 自动关闭 ----
 
   // 30 秒倒计时后自动关闭警告弹窗，用户点击任意按钮则取消倒计时
-  const AUTO_CLOSE_SECONDS = 30;
-  let remaining = AUTO_CLOSE_SECONDS;
+  let remaining = WARNING_AUTO_CLOSE_SECONDS;
   const countdownEl = document.getElementById('auto-close-countdown');
 
   function renderCountdown() {
@@ -145,12 +148,12 @@
       reportFalseBtn.textContent = '上报中...';
       try {
         await chrome.runtime.sendMessage({
-          type: 'SUBMIT_REPORT',
-          payload: { reportType: 'false_positive', domain, note: '' }
+          type: MSG_TYPES.SUBMIT_REPORT,
+          payload: { reportType: REPORT_TYPES.FALSE_POSITIVE, domain, note: '' }
         });
         reportFalseBtn.textContent = '✅ 已上报为误报，感谢反馈';
         // 3秒后关闭
-        setTimeout(() => window.close(), 3000);
+        setTimeout(() => window.close(), PHISH_CONFIRM_TIMEOUT_MS);
       } catch (e) {
         console.error('[Warning] 误报上报失败:', e);
         reportFalseBtn.textContent = '上报失败，请重试';

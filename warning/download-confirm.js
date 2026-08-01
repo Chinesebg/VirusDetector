@@ -17,6 +17,10 @@
  *   correctUrl     — 官方网站 URL（如有）
  *   officialName   — 官方名称（如有）
  */
+import {
+  MSG_TYPES, REPORT_TYPES, DOWNLOAD_CONFIRM_ACTIONS, CONFIRM_AUTO_CLOSE_SECONDS
+} from '../utils/constants.js';
+
 (function () {
   'use strict';
 
@@ -72,12 +76,12 @@
 
   /**
    * 向 Service Worker 发送用户选择并关闭窗口
-   * @param {string} action - "allow_once" | "trust_site" | "block_blacklist"
+   * @param {string} action - DOWNLOAD_CONFIRM_ACTIONS 枚举值
    */
   async function sendChoice(action) {
     try {
       await chrome.runtime.sendMessage({
-        type: 'DOWNLOAD_CONFIRMATION',
+        type: MSG_TYPES.DOWNLOAD_CONFIRMATION,
         payload: {
           action: action,
           downloadUrl: downloadUrl,
@@ -90,17 +94,17 @@
       });
 
       // 同步上报用户决策
-      if (action === 'trust_site') {
+      if (action === DOWNLOAD_CONFIRM_ACTIONS.TRUST_SITE) {
         // 信任网站 = 用户认为这是误报
         chrome.runtime.sendMessage({
-          type: 'SUBMIT_REPORT',
-          payload: { reportType: 'false_positive', domain, note: '下载确认中信任网站' }
+          type: MSG_TYPES.SUBMIT_REPORT,
+          payload: { reportType: REPORT_TYPES.FALSE_POSITIVE, domain, note: '下载确认中信任网站' }
         }).catch(() => {});
-      } else if (action === 'block_blacklist') {
+      } else if (action === DOWNLOAD_CONFIRM_ACTIONS.BLOCK_BLACKLIST) {
         // 拉黑下载域名 = 用户确认威胁
         chrome.runtime.sendMessage({
-          type: 'SUBMIT_REPORT',
-          payload: { reportType: 'confirmed_phish', domain, note: '下载确认中拉黑下载域名: ' + downloadDomain }
+          type: MSG_TYPES.SUBMIT_REPORT,
+          payload: { reportType: REPORT_TYPES.CONFIRMED_PHISH, domain, note: '下载确认中拉黑下载域名: ' + downloadDomain }
         }).catch(() => {});
       }
     } catch (e) {
@@ -113,24 +117,23 @@
 
   // 仅此次放行
   document.getElementById('btn-allow-once').addEventListener('click', () => {
-    sendChoice('allow_once');
+    sendChoice(DOWNLOAD_CONFIRM_ACTIONS.ALLOW_ONCE);
   });
 
   // 信任网站并放行
   document.getElementById('btn-trust-site').addEventListener('click', () => {
-    sendChoice('trust_site');
+    sendChoice(DOWNLOAD_CONFIRM_ACTIONS.TRUST_SITE);
   });
 
   // 拦截并拉黑
   document.getElementById('btn-block-blacklist').addEventListener('click', () => {
-    sendChoice('block_blacklist');
+    sendChoice(DOWNLOAD_CONFIRM_ACTIONS.BLOCK_BLACKLIST);
   });
 
   // ---- 自动关闭 ----
 
   // 60 秒倒计时后自动关闭（比警告窗口更长，给用户足够时间决策）
-  const AUTO_CLOSE_SECONDS = 60;
-  let remaining = AUTO_CLOSE_SECONDS;
+  let remaining = CONFIRM_AUTO_CLOSE_SECONDS;
   const hintEl = document.getElementById('auto-close-hint');
 
   function renderCountdown() {
