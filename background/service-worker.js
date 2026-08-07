@@ -1281,11 +1281,23 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
   if (!needsDetection) {
     console.log('[ServiceWorker] Gate 未通过，跳过完整检测:', domain);
 
-    // 合并预评估阶段的 Rule 1 结果
-    const rule1Result = tabState._rule1Result || ScoringEngine.evaluateRule1Only(domain);
     const savedWhoisPromise = _whoisPromises.get(tabId);
     const whoisResult = await (savedWhoisPromise || WhoisClient.lookup(domain).catch(() => null));
     _whoisPromises.delete(tabId);
+
+    // 合并预评估阶段的 Rule 1 结果；
+    // 若已有 Content Script 数据（title），用联动评分重算，补齐「内容声称品牌」信号
+    // （Gate 失败路径不跑规则三，ICP 联动保持中性，仅 title/域名年龄联动生效）
+    const baseRule1 = tabState._rule1Result || ScoringEngine.evaluateRule1Only(domain);
+    let rule1Result = baseRule1;
+    if (tabState.title) {
+      rule1Result = ScoringEngine.evaluateRule1Only(domain, {
+        icpResult: null,
+        title: tabState.title,
+        linkMetrics: null,
+        creationDays: (whoisResult && whoisResult.creationDays >= 0) ? whoisResult.creationDays : -1
+      });
+    }
 
     // 复用评分引擎的域名年龄计算（不重复写 S 衰减公式）
     const syncDomainAgeResult = {
@@ -1349,6 +1361,8 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
   const ctx = {
     url: tabState.url || url,
     domain: tabState.domain || domain,
+    title: tabState.title || '',
+    brandSignals: tabState.brandSignals || null,
     icpStrings: tabState.icpStrings || [],
     textSignals: tabState.textSignals || null,
     hasIcpGovLink: tabState.hasIcpGovLink || false,
@@ -1405,7 +1419,7 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
 
     // ═══ 阶段2：异步 Whois 域名年龄补充（不阻塞主流程） ═══
     if (tabState._whoisPending) {
-      // 保存上下文用于异步回调中的竞态检查
+      // 保存上下文用于异步回调中的竞态检查与联动重评
       const ctxSnapshot = {
         domain, tabId, pageUrl: tabState.url || url,
         syncScore: syncResult.totalScore,
@@ -1414,7 +1428,16 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
         officialName: syncResult.officialName,
         isConfirmedOfficial: syncResult.isConfirmedOfficial,
         preliminaryScore: syncResult.preliminaryScore,
-        syncDomainAgeResult: syncResult._syncDomainAgeResult
+        syncDomainAgeResult: syncResult._syncDomainAgeResult,
+        // 完整评分 ctx（供 Whois 返回后的联动重评：规则三/五的老域名降权需要域名年龄）
+        title: tabState.title || '',
+        brandSignals: tabState.brandSignals || null,
+        icpStrings: tabState.icpStrings || [],
+        textSignals: tabState.textSignals || null,
+        hasIcpGovLink: tabState.hasIcpGovLink || false,
+        linkMetrics: tabState.linkMetrics || null,
+        downloadState: tabState.downloadState || { hasDownloadedArchive: false },
+        pageMetrics: tabState.pageMetrics || null
       };
 
       ScoringEngine.evaluateDomainAgePart(
@@ -1424,6 +1447,49 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
         syncResult.isConfirmedOfficial,
         settings
       ).then(async (whoisResult) => {
+        // 同步阶段域名年龄未知（缓存未命中，规则三/五未做年龄联动）
+        // 且 Whois 现已返回年龄 → 用完整 ctx 重评一次，补齐老域名/新域名联动，
+        // 避免「首访 50 分、刷新后 30 分」的评分随缓存漂移。
+        const ageNowKnown = whoisResult.domainAgeResult &&
+          whoisResult.domainAgeResult.creationDays >= 0;
+        const ageWasUnknown = ctxSnapshot.syncDomainAgeResult &&
+          ctxSnapshot.syncDomainAgeResult.creationDays < 0;
+        if (ageNowKnown && ageWasUnknown) {
+          try {
+            const refreshed = await ScoringEngine.evaluateSync({
+              url: ctxSnapshot.pageUrl,
+              domain: ctxSnapshot.domain,
+              title: ctxSnapshot.title,
+              brandSignals: ctxSnapshot.brandSignals,
+              icpStrings: ctxSnapshot.icpStrings,
+              textSignals: ctxSnapshot.textSignals,
+              hasIcpGovLink: ctxSnapshot.hasIcpGovLink,
+              linkMetrics: ctxSnapshot.linkMetrics,
+              downloadState: ctxSnapshot.downloadState,
+              pageMetrics: ctxSnapshot.pageMetrics
+            }, settings);
+            if (refreshed && typeof refreshed.totalScore === 'number') {
+              // 重评结果已含域名年龄与规则三/五联动 → 直接应用（跳过旧 whoisResult 的分数）
+              await _applyWhoisUpdate({
+                ...ctxSnapshot,
+                syncScore: refreshed.totalScore,
+                syncBreakdown: refreshed.breakdown,
+                correctUrl: refreshed.correctUrl || ctxSnapshot.correctUrl,
+                officialName: refreshed.officialName || ctxSnapshot.officialName
+              }, {
+                ...whoisResult,
+                totalScore: refreshed.totalScore,
+                isSuspicious: refreshed.isSuspicious,
+                riskLevel: refreshed.riskLevel,
+                domainAgeResult: refreshed._syncDomainAgeResult,
+                ageBonusResult: refreshed.breakdown.ageBonus
+              });
+              return;
+            }
+          } catch (e) {
+            console.warn('[ServiceWorker] Whois 后联动重评失败，回退原路径:', domain, e.message);
+          }
+        }
         await _applyWhoisUpdate(ctxSnapshot, whoisResult);
       }).catch(e => {
         console.error('[ServiceWorker] Whois异步补充失败:', domain, e);
@@ -2062,7 +2128,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case MSG_TYPES.PAGE_ANALYSIS_RESULT: {
       const tabId = sender.tab ? sender.tab.id : null;
       if (!tabId) { sendResponse({ received: false }); return false; }
-      const { url, domain, icpStrings, textSignals, pageMetrics, linkMetrics, hasIcpGovLink, needsDetection } = message.payload;
+      const { url, domain, icpStrings, textSignals, pageMetrics, linkMetrics, hasIcpGovLink, needsDetection, title, brandSignals } = message.payload;
 
       // 竞态条件防护：校验 content script 所在标签页的当前 URL 是否与采集数据的域名一致
       // 若用户已导航到其他页面，则丢弃此消息（旧页面的数据不应污染新页面的检测结果）
@@ -2091,6 +2157,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (linkMetrics) ts.linkMetrics = linkMetrics;
         // 存储 Gate 判定结果（Content Script 计算）
         ts._needsDetection = !!(needsDetection);
+        // 存储规则一联动信号：页面 title + 下载意图派生指标（仅计数，不含正文）
+        if (title) ts.title = String(title).substring(0, 200);
+        if (brandSignals) ts.brandSignals = brandSignals;
         // 存储 Resource Resolver 数据
         if (message.payload.resourceData) {
           ts._resourceData = message.payload.resourceData;
