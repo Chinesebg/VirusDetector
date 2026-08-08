@@ -445,9 +445,14 @@ Timeline:  document_start       page load        content script reports      use
 
 #### 缓存策略
 
-- 检测结果缓存于 `chrome.storage.local`，TTL = 24 小时
+- 检测结果缓存于 `chrome.storage.local`，TTL = 24 小时（设置页可调）
 - Content Script 发回新数据时自动绕过缓存更新
 - 清除白名单时同步清除对应域名的缓存
+- **配额治理**（storage.local 上限 10MB，配额耗尽会导致检测失效）：
+  - 官方/可信/完全信任域名（`DomainDatabase` / `TrustedPlatforms` / `.gov.cn` 等）不读写缓存
+  - 周期清理：每 6 小时 alarm 自动扫描，删除过期条目 + 按 `lastAccess` LRU 保留最近 100 条
+  - 配额紧急保护：写入遇 `QuotaExceeded` 时自动清理（过期 + 最旧条目）后重试，检测结果不丢失
+- 标签页状态（`tab_state_*`）存于 `chrome.storage.session`（内存，不占 local 配额，浏览器会话结束自动清空），标签页关闭/替换时同步清理
 
 #### 弹窗去重
 
