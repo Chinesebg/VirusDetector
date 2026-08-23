@@ -185,6 +185,7 @@ class SettingsApp {
     container.innerHTML = html;
 
     this._syncInputsWithSettings();
+    this._applyAlertModeVisibility();
   }
 
   /** 构建单个设置行的 HTML */
@@ -272,9 +273,15 @@ class SettingsApp {
             </div>
           </div>`;
 
-      case 'select':
+      case 'select': {
+        const selectedOpt = (setting.options || []).find(o => o.value === value) || (setting.options || [])[0];
         const optionsHTML = (setting.options || []).map(opt =>
-          `<option value="${opt.value}" ${value === opt.value ? 'selected' : ''}>${opt.label}</option>`
+          `<button type="button" class="vt-select-option${opt.value === selectedOpt?.value ? ' selected' : ''}"
+            data-value="${opt.value}" data-label="${opt.label}" role="option"
+            aria-selected="${opt.value === selectedOpt?.value}">
+            <span>${opt.label}</span>
+            <svg class="vt-select-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+          </button>`
         ).join('');
         return `
           <div class="setting-row" data-key="${setting.key}" data-mode="${setting.mode || 'basic'}">
@@ -283,9 +290,16 @@ class SettingsApp {
               <div class="setting-desc">${setting.desc}</div>
             </div>
             <div class="setting-control">
-              <select class="setting-input" data-key="${setting.key}" data-type="select">${optionsHTML}</select>
+              <div class="vt-select" data-key="${setting.key}" data-type="select">
+                <button type="button" class="vt-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="vt-select-value">${selectedOpt ? selectedOpt.label : ''}</span>
+                  <svg class="vt-select-arrow" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="vt-select-menu" role="listbox">${optionsHTML}</div>
+              </div>
             </div>
           </div>`;
+      }
 
       case 'text':
         return `
@@ -336,11 +350,22 @@ class SettingsApp {
         input.checked = !!value;
       } else if (type === 'number') {
         input.value = value;
-      } else if (type === 'select') {
-        input.value = value;
       } else if (type === 'text') {
         input.value = value;
       }
+    }
+
+    // 自定义下拉：同步选中项与显示值
+    for (const sel of container.querySelectorAll('.vt-select')) {
+      const key = sel.dataset.key;
+      const value = this._getEffectiveValue(key);
+      sel.querySelectorAll('.vt-select-option').forEach(opt => {
+        opt.classList.toggle('selected', opt.dataset.value === String(value));
+        opt.setAttribute('aria-selected', opt.dataset.value === String(value) ? 'true' : 'false');
+      });
+      const active = sel.querySelector('.vt-select-option.selected');
+      const labelEl = sel.querySelector('.vt-select-value');
+      if (labelEl && active) labelEl.textContent = active.dataset.label || String(value);
     }
   }
 
@@ -536,6 +561,50 @@ class SettingsApp {
       }
     });
 
+    // ---- 自定义下拉（vt-select）：展开/收起、选择、点击外部与 Esc 关闭 ----
+
+    const closeAllVtSelects = () => {
+      document.querySelectorAll('.vt-select.open').forEach(s => {
+        s.classList.remove('open');
+        s.querySelector('.vt-select-trigger')?.setAttribute('aria-expanded', 'false');
+      });
+    };
+
+    app.addEventListener('click', (e) => {
+      const trigger = e.target.closest('.vt-select-trigger');
+      if (trigger) {
+        const select = trigger.closest('.vt-select');
+        const willOpen = !select.classList.contains('open');
+        closeAllVtSelects();
+        if (willOpen) {
+          select.classList.add('open');
+          select.querySelector('.vt-select-trigger').setAttribute('aria-expanded', 'true');
+        }
+        return;
+      }
+
+      const option = e.target.closest('.vt-select-option');
+      if (option) {
+        const select = option.closest('.vt-select');
+        select.classList.remove('open');
+        select.querySelector('.vt-select-trigger').setAttribute('aria-expanded', 'false');
+        const labelEl = select.querySelector('.vt-select-value');
+        if (labelEl) labelEl.textContent = option.dataset.label || option.dataset.value;
+        select.querySelectorAll('.vt-select-option').forEach(o => {
+          o.classList.toggle('selected', o === option);
+          o.setAttribute('aria-selected', o === option ? 'true' : 'false');
+        });
+        this._onSettingChange({ dataset: { key: select.dataset.key, type: 'select' }, value: option.dataset.value });
+        return;
+      }
+
+      if (!e.target.closest('.vt-select')) closeAllVtSelects();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeAllVtSelects();
+    });
+
   }
 
   // ==================== 设置变更 ====================
@@ -584,6 +653,11 @@ class SettingsApp {
       this._renderSection(this._activeSection, true);
     }
 
+    // 全屏覆盖模式无需提示方式：联动隐藏/显示「拦截提示方式」行
+    if (key === 'interceptionMode') {
+      this._applyAlertModeVisibility();
+    }
+
     this._saveSettings();
   }
 
@@ -596,6 +670,14 @@ class SettingsApp {
     const presetDef = SENSITIVITY_PRESETS[preset];
     if (!presetDef) return;
     this._presetOverrides = { ...presetDef.overrides };
+  }
+
+  /** 全屏覆盖模式下无需提示方式：联动隐藏/显示 alertMode 行（过渡动画见 CSS） */
+  _applyAlertModeVisibility() {
+    const row = document.querySelector('.setting-row[data-key="alertMode"]');
+    if (!row) return;
+    const fullscreen = this._getEffectiveValue('interceptionMode') === 'fullscreen';
+    row.classList.toggle('is-hidden', fullscreen);
   }
 
   // ==================== 模式切换 ====================

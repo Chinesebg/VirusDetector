@@ -3,13 +3,13 @@
 > Chrome/Edge 浏览器扩展，实时检测银狐木马（Silver Fox Trojan）钓鱼与仿冒网站。
 
 [![Manifest](https://img.shields.io/badge/Manifest-V3-blue)](https://developer.chrome.com/docs/extensions/mv3/)
-[![Version](https://img.shields.io/badge/Version-2.5.2-orange)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-3.0.0--alpha.1-orange)](https://github.com)
 
 ---
 
 ## 功能简介
 
-通过 8 项检测与下载域名黑名单加成对访问的网站进行实时安全评估。当总分达到 100 分阈值时，自动触发红色警告、桌面通知、下载拦截和警告弹窗。
+通过 8 项检测与下载域名黑名单加成对访问的网站进行实时安全评估。当总分达到 100 分阈值时，自动触发红色警告与下载拦截，并按设置弹出警告弹窗或发送桌面通知（拦截方式可选「下载注入+顶部横幅」或「全屏覆盖全面拦截」）。
 
 | 规则 | 最高加分 | 检测内容 |
 | ---- | -------- | -------- |

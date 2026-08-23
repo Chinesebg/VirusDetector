@@ -82,6 +82,12 @@
     'get started', 'ダウンロード'
   ];
 
+  // 下载意图通配正则源串（仅注入拦截使用；与 constants.js DOWNLOAD_INTENT_PATTERN_SOURCES 一致）
+  C.DOWNLOAD_INTENT_PATTERN_SOURCES = [
+    '\\S{1,8}版(?!本)',
+    '[a-z0-9][\\w.]{0,14}[\\s-]+version\\b'
+  ];
+
   // 中间下载页抓取关键词（config 版 ∪ content-script 版并集）
   C.INTERMEDIATE_PAGE_KEYWORDS = [
     '下载', 'download', '下載', '立即下载', '免费下载', '高速下载',

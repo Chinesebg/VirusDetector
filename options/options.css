@@ -1411,3 +1411,140 @@ select:focus {
   border-radius: var(--radius-sm);
   border-left: 3px solid var(--blue);
 }
+
+/* ===== 自定义下拉（vt-select） ===== */
+.vt-select {
+  position: relative;
+  width: 220px;
+  max-width: 100%;
+}
+
+.vt-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.vt-select-trigger:hover {
+  border-color: var(--text3);
+}
+
+.vt-select.open .vt-select-trigger,
+.vt-select-trigger:focus-visible {
+  border-color: var(--blue);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.15);
+}
+
+.vt-select-arrow {
+  flex-shrink: 0;
+  color: var(--text2);
+  transition: transform 0.2s ease;
+}
+
+.vt-select.open .vt-select-arrow {
+  transform: rotate(180deg);
+}
+
+.vt-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transform-origin: top center;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.vt-select.open .vt-select-menu {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.vt-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.vt-select-option:hover {
+  background: var(--bg3);
+}
+
+.vt-select-option.selected {
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.vt-select-check {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.vt-select-option.selected .vt-select-check {
+  opacity: 1;
+}
+
+/* ===== 联动隐藏：全屏覆盖模式下「拦截提示方式」行收起 ===== */
+.setting-row[data-key="alertMode"] {
+  max-height: 120px;
+  overflow: hidden;
+  transition: max-height 0.28s ease, opacity 0.22s ease, transform 0.22s ease,
+    padding 0.28s ease, border-color 0.28s ease;
+}
+
+/* 展开下拉时解除本行裁剪（overflow:hidden 会截断下拉面板，表现为被下一项遮住） */
+.setting-row[data-key="alertMode"]:has(.vt-select.open) {
+  overflow: visible;
+}
+
+.setting-row[data-key="alertMode"].is-hidden {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-color: transparent;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-select-menu,
+  .vt-select-arrow,
+  .setting-row[data-key="alertMode"] {
+    transition-duration: 0.01ms;
+  }
+}

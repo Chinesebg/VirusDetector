@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN" style="display: none;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>已阻止打开此网页 - 银狐木马检测</title>
+  <link rel="icon" href="../icons/icon32.png">
+  <script src="../popup/theme-init.js"></script>
+  <link rel="stylesheet" href="warning-fullscreen.css">
+</head>
+<body>
+  <main class="page" aria-labelledby="warning-title">
+    <section class="warning-panel">
+      <div class="app-mark" aria-label="银狐木马检测">
+        <img src="../icons/icon48.png" width="32" height="32" alt="">
+        <span>银狐木马检测</span>
+      </div>
+
+      <div class="warning-heading">
+        <div class="risk-symbol" aria-hidden="true">!</div>
+        <h1 id="warning-title">已阻止打开此网页</h1>
+      </div>
+      <p class="message">
+        “<strong id="info-domain">正在读取</strong>”被标记为高风险。为保护此设备，我们已阻止您的访问。
+      </p>
+
+      <div class="actions" aria-label="安全操作">
+        <button id="btn-back" class="button button-primary" type="button">回退</button>
+        <button id="btn-second" class="button button-secondary" type="button">关闭此页面</button>
+      </div>
+
+      <button id="btn-review-trust" class="trust-link" type="button">我了解风险，仍要访问此网站…</button>
+      <button id="btn-report-false" class="report-link" type="button">此检测有误（误报）</button>
+      <p id="page-status" class="status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <dialog id="trust-dialog" class="trust-dialog" aria-labelledby="trust-title" aria-describedby="trust-description">
+    <div class="dialog-content">
+      <h2 id="trust-title">你确认信任它吗？</h2>
+      <p id="trust-description">
+        “<strong id="dialog-domain">正在读取</strong>”将被加入白名单，并跳过后续检测。
+      </p>
+
+      <div class="dialog-actions">
+        <button id="btn-confirm-trust" class="dialog-button dialog-button-danger" type="button">是的，我信任它</button>
+        <button id="btn-cancel-trust" class="dialog-button dialog-button-primary" type="button" autofocus>不，我反悔了</button>
+      </div>
+      <p id="dialog-status" class="status" role="status" aria-live="polite"></p>
+    </div>
+  </dialog>
+
+  <script type="module" src="warning-fullscreen.js"></script>
+</body>
+</html>

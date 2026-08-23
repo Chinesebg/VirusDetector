@@ -12,9 +12,10 @@
  * SENSITIVITY_PRESETS（灵敏度预设）、validateSetting（单值校验并钳制）、
  * SCHEMA_VERSION + migrateSettings（设置版本迁移）。
  *
- * migrateSettings 一次性迁移 v1 → v2：修正 apihz 凭据键名拼写
- * （icpApiApiahzId/Key → icpApiApihzId/Key），幂等（_schemaVersion ≥
- * SCHEMA_VERSION 时原样返回）；调用方读设置后调用，返回值不同则写回。
+ * migrateSettings 幂等迁移 v1 → v2 → v3（_schemaVersion ≥ SCHEMA_VERSION
+ * 时原样返回）：v2 修正 apihz 凭据键名拼写；v3 将桌面通知/警告弹窗两个
+ * 开关合并为「拦截提示方式」单选 alertMode 并删除旧键；调用方读设置后
+ * 调用，返回值不同则写回。
  *
  * @module settings-schema
  */
@@ -50,8 +51,8 @@ import {
 
 // ==================== Schema 版本 ====================
 // 版本迁移见文件尾 migrateSettings()
-/** 用于检测旧版本数据并触发迁移 */
-export const SCHEMA_VERSION = 2;
+/** 用于检测旧版本数据并触发迁移（v3：通知/弹窗开关合并为 alertMode） */
+export const SCHEMA_VERSION = 3;
 
 // ==================== 灵敏度预设 ====================
 /**
@@ -129,9 +130,9 @@ export const SETTINGS_DEFAULTS = {
   // === 常规设置 (basic) ===
   sensitivityPreset: PRESET_LEVELS[1],
   theme: THEME_VALUES[0],
-  desktopNotifications: true,
-  showWarningWindow: true,
   showDetectionDetails: true,
+  interceptionMode: 'banner',   // banner=下载注入+顶部横幅 | fullscreen=全屏覆盖全面拦截
+  alertMode: 'popup',           // popup=警告弹窗 | notification=桌面通知 | none=都不提示
 
   // === 检测规则开关 (basic) ===
   rule1Enabled: true,
@@ -279,13 +280,22 @@ export const SECTIONS = [
             mode: 'basic'
           },
           {
-            key: 'desktopNotifications', type: 'boolean', label: '桌面通知',
-            desc: '检测到危险网站时弹出系统通知',
+            key: 'interceptionMode', type: 'select', label: '拦截方式',
+            desc: '检测到危险网站时的拦截方式：默认注入下载拦截并显示顶部横幅，或全屏覆盖拦截页整体替换原网页',
+            options: [
+              { value: 'banner', label: '下载注入 + 顶部横幅（默认）' },
+              { value: 'fullscreen', label: '全屏覆盖全面拦截' }
+            ],
             mode: 'basic'
           },
           {
-            key: 'showWarningWindow', type: 'boolean', label: '警告弹窗',
-            desc: '检测到危险网站时弹出全屏警告窗口',
+            key: 'alertMode', type: 'select', label: '拦截提示方式',
+            desc: '触发拦截时的提醒方式：弹出警告窗口或发送桌面通知（全屏覆盖模式下拦截页本身即提示）',
+            options: [
+              { value: 'popup', label: '警告弹窗（默认）' },
+              { value: 'notification', label: '桌面通知' },
+              { value: 'none', label: '都不提示' }
+            ],
             mode: 'basic'
           },
           {
@@ -847,13 +857,11 @@ export function validateSetting(key, value) {
       if (key === 'theme') {
         return THEME_VALUES.includes(value) ? value : def;
       }
-      // select 类型：验证是否在 options 中（预设档位/主题名等共享枚举）
-      if (PRESET_LEVELS.includes(def) || THEME_VALUES.includes(def)) {
+      // select 类型：验证值必须在 options 枚举内
+      {
         const setting = findSettingMeta(key);
-        if (setting && setting.options) {
-          const validValues = setting.options.map(o => o.value);
-          if (validValues.includes(value)) return value;
-          return def;
+        if (setting && Array.isArray(setting.options) && setting.options.length > 0) {
+          return setting.options.some(o => o.value === value) ? value : def;
         }
       }
       return String(value);
@@ -879,11 +887,11 @@ function findSettingMeta(key) {
 // ==================== 设置迁移 ====================
 
 /**
- * 一次性设置迁移 v1 → v2。
- * v2 修正 apihz 凭据键名拼写：icpApiApiahzId/Key → icpApiApihzId/Key
- * （旧键值拷到新键，新键已有值时保留新键，随后删除旧键）。
+ * 设置迁移 v1 → v2 → v3（幂等）。
+ * v2 修正 apihz 凭据键名拼写：icpApiApiahzId/Key → icpApiApihzId/Key；
+ * v3 将桌面通知/警告弹窗两个开关合并为 alertMode 单选并删除旧键。
  *
- * 幂等：存储中 _schemaVersion >= SCHEMA_VERSION 时原样返回；
+ * 存储中 _schemaVersion >= SCHEMA_VERSION 时原样返回；
  * 未写 _schemaVersion 的旧数据视为 v1。
  * 调用方（service-worker.js loadGlobalSettings / options.js _loadSettings）
  * 应在读设置后调用，若返回对象与存储不同则写回。
@@ -909,6 +917,19 @@ export function migrateSettings(stored) {
       delete out.icpApiApiahzKey;
     }
     v = 2;
+  }
+  if (v < 3) {
+    // 旧开关 → alertMode：都关→none；仅通知开→notification；其余（弹窗开）→popup
+    if (out.alertMode === undefined) {
+      const notifOn = out.desktopNotifications !== false;
+      const popupOn = out.showWarningWindow !== false;
+      if (!notifOn && !popupOn) out.alertMode = 'none';
+      else if (!popupOn) out.alertMode = 'notification';
+      else out.alertMode = 'popup';
+    }
+    delete out.desktopNotifications;
+    delete out.showWarningWindow;
+    v = 3;
   }
   out._schemaVersion = v;
   return out;

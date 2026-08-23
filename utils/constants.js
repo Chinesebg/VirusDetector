@@ -21,7 +21,7 @@
  * 注意：更新检测以 chrome.runtime.getManifest().version 为唯一真源，不依赖此常量；
  * 发版时仍需同步修改此处 + manifest.json + README（本常量已与 manifest 脱节过一次，见 v2.5.1）。
  */
-export const VERSION = '2.5.2';
+export const VERSION = '3.0.0';
 
 // ==================== 评分体系 ====================
 /** 触发警告的总分阈值（注入拦截 + 警告窗口 + 图标变红） */
@@ -151,6 +151,17 @@ export const DOWNLOAD_INTENT_KEYWORDS = [
   'down', 'dl', 'get', 'setup', 'install', 'free', 'app',
   'exe', 'msi', 'dmg', 'apk', 'zip', 'rar', '7z',
   'get started', 'ダウンロード'
+];
+
+/**
+ * 下载意图通配正则源串（仅注入拦截使用，不参与站点评分）。
+ * 中文「xx版」：版前 1~8 个非空白字符且版后不紧跟"本"（排除"版本"）；
+ * 英文「xx version」：单词/连字符 + version（忽略大小写）。
+ * 各端按需 new RegExp(source, 'i') 构造。
+ */
+export const DOWNLOAD_INTENT_PATTERN_SOURCES = [
+  '\\S{1,8}版(?!本)',
+  '[a-z0-9][\\w.]{0,14}[\\s-]+version\\b'
 ];
 
 /**
@@ -813,6 +824,7 @@ deepFreeze(ARCHIVE_EXTENSIONS);
 deepFreeze(DOWNLOAD_LINK_KEYWORDS);
 deepFreeze(DOWNLOAD_BUTTON_KEYWORDS);
 deepFreeze(DOWNLOAD_INTENT_KEYWORDS);
+deepFreeze(DOWNLOAD_INTENT_PATTERN_SOURCES);
 deepFreeze(INTERMEDIATE_PAGE_KEYWORDS);
 deepFreeze(FILE_EXTENSIONS);
 deepFreeze(EXECUTABLE_EXTENSIONS);

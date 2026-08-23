@@ -48,6 +48,7 @@ import {
   UPDATE_VERSION_API_URL, UPDATE_CHANNEL, UPDATE_CHECK_TIMEOUT_MS, UPDATE_RETRY_DELAY_MINUTES,
   ICP_API_CONFIG, SCORE_SITE_BLACKLIST, WARNING_COOLDOWN_MS,
   ARCHIVE_EXTENSIONS, EXECUTABLE_EXTENSIONS, DOWNLOAD_INTENT_KEYWORDS,
+  DOWNLOAD_INTENT_PATTERN_SOURCES,
   buildAuthPatterns, ALARM_NAME_UPDATE_CHECK, UPDATE_CHECK_PERIOD_MINUTES,
   CACHE_CLEANUP_ALARM_NAME, CACHE_CLEANUP_PERIOD_MINUTES, CACHE_LRU_KEEP_COUNT,
   GATE_TIMEOUT_MS, BLOCKER_OBSERVER_LIFETIME_MS, REPORTS_MAX_ENTRIES,
@@ -704,9 +705,8 @@ const _authenticationTabs = new Set();
 /**
  * 触发高危响应：
  * 1. 图标变红（总是执行）
- * 2. 注入下载拦截脚本（仅首次）
- * 3. 弹出系统通知（5秒冷却）
- * 4. 创建警告窗口（5秒冷却，同域名不重复）
+ * 2. 全屏覆盖模式：安全拦截页整体替换当前标签页（拦截页本身即提示）
+ * 3. 默认横幅模式：注入下载拦截脚本 + 顶部横幅，再按「拦截提示方式」提醒
  */
 async function triggerWarningFlow(tabId, tabState) {
   const domain = tabState.domain;
@@ -717,50 +717,54 @@ async function triggerWarningFlow(tabId, tabState) {
   // 1. 图标即时变红（总是执行）
   setIconRed(tabId);
 
-  // 2. 收集已知压缩包链接 URL 列表（用于精准拦截）
-  const archiveUrls = [];
-  if (tabState.linkMetrics && tabState.linkMetrics.archiveDownloadLinks) {
-    for (const link of tabState.linkMetrics.archiveDownloadLinks) {
-      try {
-        archiveUrls.push(new URL(link.href, 'http://' + domain).href);
-      } catch (e) { archiveUrls.push(link.href); }
-    }
-  }
-
-  // 3. 注入下载拦截脚本（仅首次，传入已知压缩包链接进行精准拦截）
   const settings = await getSettings();
-  if (settings.downloadInjection !== false) {
-    await injectDownloadBlocker(tabId, archiveUrls);
-  }
-
-  // 去重检查：同标签页冷却期内跳过通知和弹窗
   const cooldownMs = getEffectiveThreshold('warning_cooldownMs', WARNING_COOLDOWN_MS);
   const lastTime = _warningCooldown.get(tabId) || 0;
-  if (now - lastTime < cooldownMs) {
+  const inCooldown = now - lastTime < cooldownMs;
+
+  // 2. 全屏覆盖模式：整体替换页面，不再额外弹窗/发通知
+  if (settings.interceptionMode === 'fullscreen') {
+    if (inCooldown) return;
+    _warningCooldown.set(tabId, now);
+    openFullscreenWarning(tabId, tabState).catch(e =>
+      console.error('[ServiceWorker] 全屏覆盖拦截失败:', e));
+    console.log('[ServiceWorker] ⚠️ 全屏覆盖拦截已触发:', { domain, score, correctUrl });
+    return;
+  }
+
+  // 3. 默认模式：注入下载拦截脚本 + 顶部横幅（仅首次，传入已知压缩包链接进行精准拦截）
+  if (settings.downloadInjection !== false) {
+    await injectDownloadBlocker(tabId, collectArchiveUrls(tabState));
+  }
+
+  // 去重检查：同标签页冷却期内跳过重复提醒
+  if (inCooldown) {
     console.log('[ServiceWorker] ⚠️ 冷却期内，跳过重复弹窗:', domain);
     return;
   }
   _warningCooldown.set(tabId, now);
 
-  // 4. 桌面通知（可通过设置关闭）
-  if (settings.desktopNotifications !== false) {
-    chrome.notifications.create({
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: '⚠️ 银狐木马检测 - 风险警告',
-      message: `检测到疑似钓鱼网站: ${domain}\n风险评分: ${score}分${correctUrl ? '\n正确官网: ' + correctUrl : ''}`,
-      priority: 2,
-      buttons: correctUrl ? [{ title: '✅ 前往官网' }] : [],
-      requireInteraction: true
-    }).catch(() => {});
-  }
-
-  // 5. 创建警告窗口（可通过设置关闭）
-  if (settings.showWarningWindow !== false) {
+  // 4. 拦截提示方式：警告弹窗 / 桌面通知 / 都不提示
+  if (settings.alertMode === 'notification') {
+    showDesktopRiskNotification(tabId, tabState);
+  } else if (settings.alertMode !== 'none') {
     openWarningWindow(tabState);
   }
 
   console.log('[ServiceWorker] ⚠️ 高危响应已触发:', { domain, score, correctUrl });
+}
+
+/** 收集已知压缩包下载链接 URL 列表（用于精准拦截） */
+function collectArchiveUrls(tabState) {
+  const archiveUrls = [];
+  if (tabState.linkMetrics && tabState.linkMetrics.archiveDownloadLinks) {
+    for (const link of tabState.linkMetrics.archiveDownloadLinks) {
+      try {
+        archiveUrls.push(new URL(link.href, 'http://' + (tabState.domain || 'localhost')).href);
+      } catch (e) { archiveUrls.push(link.href); }
+    }
+  }
+  return archiveUrls;
 }
 
 /**
@@ -788,6 +792,7 @@ async function injectDownloadBlocker(tabId, archiveUrls = [], mode = 'full') {
         archives: ARCHIVE_EXTENSIONS,
         executables: EXECUTABLE_EXTENSIONS,
         downloadKeywords: DOWNLOAD_INTENT_KEYWORDS,
+        intentPatterns: DOWNLOAD_INTENT_PATTERN_SOURCES,
         // 注：注入函数经 executeScript 序列化执行，闭包不保留，
         // 所有模块级常量必须经 args 显式传入（历史回归点：BLOCKER_OBSERVER_LIFETIME_MS）
         observerLifetimeMs: BLOCKER_OBSERVER_LIFETIME_MS
@@ -909,6 +914,16 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
     'exe', 'msi', 'dmg', 'apk', 'zip', 'rar', '7z',
     'get started', 'ダウンロード'
   ];
+
+  // 下载意图通配正则（仅注入拦截）：中文「xx版」、英文「xx version」
+  var INTENT_PATTERN_SOURCES = (extLists && extLists.intentPatterns) || C.DOWNLOAD_INTENT_PATTERN_SOURCES || [
+    '\\S{1,8}版(?!本)',
+    '[a-z0-9][\\w.]{0,14}[\\s-]+version\\b'
+  ];
+  var INTENT_PATTERNS = [];
+  for (var pi = 0; pi < INTENT_PATTERN_SOURCES.length; pi++) {
+    try { INTENT_PATTERNS.push(new RegExp(INTENT_PATTERN_SOURCES[pi], 'i')); } catch (e) { /* 非法源串忽略 */ }
+  }
 
   function _isDangerousHref(href) {
     if (!href || typeof href !== 'string') return false;
@@ -1038,6 +1053,9 @@ function injectBlockerFunc(archiveUrls, detectNonArchive, mode, extLists) {
     var combined = text + ' ' + aria + ' ' + title;
     for (var i = 0; i < DOWNLOAD_KEYWORDS.length; i++) {
       if (combined.indexOf(DOWNLOAD_KEYWORDS[i].toLowerCase()) !== -1) return true;
+    }
+    for (var pj = 0; pj < INTENT_PATTERNS.length; pj++) {
+      if (INTENT_PATTERNS[pj].test(combined)) return true;
     }
     return false;
   }
@@ -1222,7 +1240,8 @@ function openWarningWindow(tabState) {
     domain: tabState.domain || '未知',
     score: String(tabState.score || 0),
     correctUrl: tabState.correctUrl || '',
-    officialName: tabState.officialName || ''
+    officialName: tabState.officialName || '',
+    originalUrl: tabState.url || ''
   });
 
   chrome.windows.create({
@@ -1236,6 +1255,172 @@ function openWarningWindow(tabState) {
       url: chrome.runtime.getURL('warning/warning.html?' + params.toString())
     }).catch(() => {});
   });
+}
+
+/**
+ * 全屏覆盖拦截：将当前危险标签页整体替换为扩展内安全拦截页；
+ * 替换失败时兜底注入下载拦截脚本保护原页面，并新开标签页显示警告。
+ */
+async function openFullscreenWarning(tabId, tabState) {
+  const params = new URLSearchParams({
+    mode: 'fullscreen',
+    domain: tabState.domain || '未知',
+    score: String(tabState.score || 0),
+    correctUrl: tabState.correctUrl || '',
+    officialName: tabState.officialName || '',
+    originalUrl: tabState.url || ''
+  });
+  const warningUrl = chrome.runtime.getURL('warning/warning-fullscreen.html?' + params.toString());
+  try {
+    await chrome.tabs.update(tabId, { url: warningUrl });
+  } catch (e) {
+    console.error('[ServiceWorker] 无法替换危险标签页，改为新标签页显示警告:', e);
+    await injectDownloadBlocker(tabId, collectArchiveUrls(tabState)).catch(() => {});
+    chrome.tabs.create({ url: warningUrl, active: true }).catch(() => {});
+  }
+}
+
+// ==================== 桌面风险通知（Windows 横幅通知） ====================
+// 通知上下文（拦截时点快照）存 session storage，按钮点击时一次性取回。
+
+const RISK_NOTIFICATION_KEY_PREFIX = 'risk_notification:';
+const RISK_NOTIFICATION_TTL_MS = 30 * 60 * 1000;
+const _riskNotificationConsumptions = new Map();
+
+function getRiskNotificationStorage() {
+  return chrome.storage.session || chrome.storage.local;
+}
+
+function getRiskNotificationStorageKey(notificationId) {
+  return RISK_NOTIFICATION_KEY_PREFIX + notificationId;
+}
+
+async function removeRiskNotificationContext(notificationId) {
+  if (!notificationId.startsWith('risk:')) return;
+  await getRiskNotificationStorage()
+    .remove(getRiskNotificationStorageKey(notificationId))
+    .catch(() => {});
+}
+
+/**
+ * 串行取出一次性通知上下文，避免同一通知被重复处理。
+ * @param {string} notificationId 通知 ID
+ * @returns {Promise<Object|null>} 未过期的通知上下文
+ */
+async function takeRiskNotificationContext(notificationId) {
+  if (!notificationId.startsWith('risk:')) return null;
+  const previous = _riskNotificationConsumptions.get(notificationId) || Promise.resolve();
+  const task = previous.catch(() => {}).then(async () => {
+    const storage = getRiskNotificationStorage();
+    const key = getRiskNotificationStorageKey(notificationId);
+    const stored = await storage.get(key);
+    await storage.remove(key);
+    const context = stored[key];
+    if (!context || Date.now() - context.createdAt > RISK_NOTIFICATION_TTL_MS) return null;
+    return context;
+  });
+  _riskNotificationConsumptions.set(notificationId, task);
+  try {
+    return await task;
+  } finally {
+    if (_riskNotificationConsumptions.get(notificationId) === task) {
+      _riskNotificationConsumptions.delete(notificationId);
+    }
+  }
+}
+
+/** 通知上下文操作的串行队列（同一通知的多个操作按序执行） */
+function queueRiskNotificationContext(notificationId, operation) {
+  const previous = _riskNotificationConsumptions.get(notificationId) || Promise.resolve();
+  const task = previous.catch(() => {}).then(operation);
+  _riskNotificationConsumptions.set(notificationId, task);
+  return (async () => {
+    try {
+      return await task;
+    } finally {
+      if (_riskNotificationConsumptions.get(notificationId) === task) {
+        _riskNotificationConsumptions.delete(notificationId);
+      }
+    }
+  })();
+}
+
+/** 通知关闭后延迟清理上下文（通知仍可见时保留，供按钮点击取回） */
+function scheduleRiskNotificationContextCleanup(notificationId) {
+  setTimeout(() => {
+    queueRiskNotificationContext(notificationId, async () => {
+      const visible = await chrome.notifications.getAll().catch(() => ({}));
+      if (!visible[notificationId]) await removeRiskNotificationContext(notificationId);
+    });
+  }, 300);
+}
+
+// 通知图片解码器不支持 SVG，以下图标均由项目 SVG 路径栅格化为 PNG data URL（图标文件未改动）
+const STAR_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA3ElEQVR42p2RMQ6CQBREOQAlp6Ck8QQm1BIwsbEn4QwewMLGhMaSwhg7Cm9AiAmtt+AAVE9NhoiGXYKbTPPnzfzNrgM4FgWSkXEmCu7SXwUJn5P8U1ABZ6maW7DS5oWEZqMF3svdAQVQA60C1wF41awVUyjjvc1QZgkcgBRYAu6gwNUsFVMqE/bARoPjxK84YlDm6w3WMnJLOBezNj1iJCAeCcfyItsvBIL8kQJfXmAr2ALdoOwi9aFOjLFgDzTASdtqCc0aMcaCm+DHz6atZoix3iCz/EI2dYPZegIqyTjOtOpg8wAAAABJRU5ErkJggg==';              // 加入白名单：星形（复用 popup 白名单星标按钮图标）
+const NOTIFICATION_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAEpUlEQVR42u2dPUgcURSFF8RqSZVGrMTSbkll5woW6SzFKp2KhcUqacQypdiYLpWkEYQtwlYpRdB0up1luhQGLLZQ4SQLbyEQZ+bNz+7Ofe+7cBrRmfXez5n3zr0zNiQ1ULwiCQBAEgAAAQACAAQACADyqyWpI+lcUl/Sg6RnEVXHs8tt3+W643I/FQCakvYl3VKXqcetq0VzUgAcOBKJesWDq83YABhebq7Ic+3jKs+twbf4m5JeyK2ZeHE1qwSAbfJpNrbLArDpeaKbv9QdSlqRNCdpli1W5Zp1uV1xub7xrM1mUQBaHpf9nqQ2xZma2q4GWbeDVhEAshZ8OxSgNtrxWBjmAuAg5WC/3WWIxNdLK642SXHgC0AzY59P8esNQZpP0PQBYJ/LfrC3g30fAG5TFnwk2IZ6KbZxKgCtFHpY7dvaHSRFKw2ATso+n8TaUpJP0EkD4Dzhhw5JqDkdJtTyPA2APiv/4HcE/TQAkrZ/cyTUnOZStoOJACRN8uDt2+wdJE0WJQKQFCTUpjLrCQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQDIBAAEAAgAEAAgAEAAgAEAAgAAAAQACAAQASNI7SV1JA6eu+xoARFL8wSu5G0wRAgCYoK5T8tcFgLB1kvGevgEAhKsNj9e1AkCgWvD83wncAgJVT37BIjBAHXkWf5dtYHha8yz+GUZQeHoj6d6j+PfuewEgMJ15/vWvYQWHp13P4h/RCwjT6vWJOr1UGwAmZPX++xLGBQCIz+odxQbt4DitXjlImAeI1Oq9ZiAEqxcAApu6sWD1RgdA2tTNaoRWb3QAdDN67lVAYMnqjQ6AgcfgRVkILFm9AFAxBNasXm4BFUJg0eplEVghBBat3ii3gatjgMCq1RutEVQlBJat3qidwCogsG71Rm8Fl4XAutVLL6AEBCFYvQBQEIJQrF4AKAFBCFYvAJSAIASrFwDGBMFRAMWvFIBhQmYigaAXQOFnMha5uQEYxk9JW4FDYM3qfU1brlYqAsCjR5J+SFoPFIINw4Vfd7XJisc0AE5zJOubpOWAIDgxWvhlVwvfOE0DIC8Ew/giadE4BBat3kWXexUtfhIAQ7UkXeQ8+CdJTYMQDIxZvU2X6zxx4Wra8AVgpPeSLnOc6JekPd7jNzbtuRz7xqWrYeIxfU/8wXNQchR3xhdUdXw66S5H/u9dzTKPnfeDfPTcKYziu6Q2BSystsuhbzy6Gnmfo8iHeivpOOc96KukJQrqrSWXszxx7GrTGDcAE/+QEWnif1wmLlORaCq3VxMLlcA11QW2ia1KoKrFFtuEWRGYamWy1dGu/CxpPsDCz7vfrVY2e10bFk8GZxCyevNPdWy01bVlaXUGoUhvfqqtdhITOehcGiO/1bE4inyxy/Yo8u0uBknkhhcWaeSWN02SyJtetEkjb3szKBH54AujUpGPvjEsGfnwayidtrJbstDG36MDoIwpE9oDMNECUMaWDeUROAAo0Zix/hAsAFTUmrXaggaAimYQrA+hAEDBGYSQxtAAwHMG4dEp1EFUAEAAgAAAAQACAPS//gC/4oeTylwe/AAAAABJRU5ErkJggg==';    // 通知主图标：镂空盾牌主题图标
+const CHECK_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAu0lEQVR42q2TsQnDMBBFDRkgfQoPETxFKq+QIdJqhuwQBC61iOtUGiFkhBcEXyDkk02wDb+5+/fv353cAd0etBID4AAvOMU2Bc4qSF8EghAV8+KYAikxizwa3Ubl5lKkJHgReqP4KvTi+FpgkEWr8wl4A6/CCXknmeSkbC30CXyBSxGLqulK+6EgPISbut0r0ZDHWBNA1ifD1ULAGiGJfCrrzRHWlmidc7HErTNmNM94yEPa/ZQP+Zn+xg8tIDl3O7eg2QAAAABJRU5ErkJggg==';            // 前往官网：对勾（复用备案核验分区图标）
+
+/**
+ * 发送 Windows 横幅桌面风险通知。
+ * @param {number} tabId 危险标签页 ID
+ * @param {Object} tabState 当前风险状态
+ * @returns {Promise<boolean>} 通知是否成功创建
+ */
+async function showDesktopRiskNotification(tabId, tabState) {
+  let notificationId = '';
+  try {
+    if (typeof chrome.notifications.getPermissionLevel === 'function') {
+      const permission = await chrome.notifications.getPermissionLevel();
+      if (permission !== 'granted') {
+        console.warn('[ServiceWorker] 桌面通知权限未开启:', permission);
+        return false;
+      }
+    }
+
+    const createdAt = Date.now();
+    notificationId = `risk:${tabId}:${createdAt}`;
+    await getRiskNotificationStorage().set({
+      [getRiskNotificationStorageKey(notificationId)]: {
+        tabId,
+        url: tabState.url || '',
+        domain: tabState.domain || '',
+        correctUrl: tabState.correctUrl || '',
+        createdAt
+      }
+    });
+    const options = {
+      type: 'basic',
+      iconUrl: NOTIFICATION_ICON_DATA_URL,
+      title: '风险警告',
+      message: `检测到疑似钓鱼网站并拦截\n风险评分为${tabState.score}分，请仔细甄别！`,
+      priority: 2,
+      buttons: [
+        { title: '前往官网', iconUrl: CHECK_ICON_DATA_URL },
+        { title: '加入白名单', iconUrl: STAR_ICON_DATA_URL }
+      ],
+      requireInteraction: true
+    };
+    try {
+      await chrome.notifications.create(notificationId, options);
+    } catch (error) {
+      // 图标仍无法加载时回退为内置图标 + 纯文本按钮重试一次，保证通知可达
+      if (error && /Unable to download all specified images/i.test(error.message || '')) {
+        await chrome.notifications.create(notificationId, {
+          ...options,
+          iconUrl: chrome.runtime.getURL('icons/icon48.png'),
+          buttons: options.buttons.map(b => ({ title: b.title }))
+        });
+      } else {
+        throw error;
+      }
+    }
+    console.log('[ServiceWorker] 桌面风险通知已发送:', notificationId);
+    return true;
+  } catch (error) {
+    if (notificationId) await removeRiskNotificationContext(notificationId);
+    console.error('[ServiceWorker] 桌面风险通知发送失败:', error);
+    return false;
+  }
 }
 
 // ==================== 页面分析 ====================
@@ -2348,6 +2533,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ts.isAnalyzed = true;
           await saveTabState(tabs[0].id, ts);
           setIconWhitelist(tabs[0].id);
+          // 移除所有白名单标签页上的下载拦截脚本（含非活跃的危险标签页）
+          await removeBlockersFromWhitelistedTabs();
           // 不删除域名缓存，以便移除白名单后可恢复检测状态
         }
         sendResponse({ success: true });
@@ -2720,35 +2907,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-// 通知按钮：点击"前往官网" → 关闭危险标签页 + 打开正确官网
-chrome.notifications.onButtonClicked.addListener(async (notifId, btnIdx) => {
-  if (btnIdx === 0) {
-    // 获取当前活跃标签页的状态信息
-    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTabs.length === 0) return;
-    const ts = await loadTabState(activeTabs[0].id);
-
-    // 查找并关闭包含危险域名的所有标签页
-    const domain = ts?.domain || '';
-    if (domain) {
-      const cleanDomain = domain.replace(/^www\./i, '');
-      const allTabs = await chrome.tabs.query({});
-      const dangerTabs = allTabs.filter(tab => {
-        try {
-          const host = new URL(tab.url || '').hostname.replace(/^www\./i, '');
-          return host === cleanDomain || host.endsWith('.' + cleanDomain);
-        } catch (e) { return false; }
-      });
-      if (dangerTabs.length > 0) {
-        await chrome.tabs.remove(dangerTabs.map(t => t.id)).catch(() => {});
-      }
-    }
-
-    // 打开官方正确网址
-    if (ts?.correctUrl) {
-      chrome.tabs.create({ url: ts.correctUrl }).catch(() => {});
-    }
+/**
+ * 处理通知按钮：
+ *   「前往官网」— 校验页面身份后关闭危险标签页并打开官网（无官网信息时聚焦危险标签页）
+ *   「加入白名单」— 域名加入白名单并移除页面拦截
+ * @param {string} notificationId 通知 ID
+ * @param {number} buttonIndex 按钮索引
+ * @returns {Promise<void>}
+ */
+async function handleRiskNotificationButton(notificationId, buttonIndex) {
+  const context = await takeRiskNotificationContext(notificationId);
+  if (!context) {
+    await chrome.notifications.clear(notificationId).catch(() => {});
+    return;
   }
+
+  if (buttonIndex === 0) {
+    const warningPagePrefix = chrome.runtime.getURL('warning/warning');
+    const tab = await chrome.tabs.get(context.tabId).catch(() => null);
+    const hasPendingNavigation = Boolean(tab?.pendingUrl);
+    const stillOriginalPage = tab?.url === context.url;
+    const stillMatchingWarningPage = typeof tab?.url === 'string' &&
+      tab.url.startsWith(warningPagePrefix);
+
+    if (context.correctUrl && !shouldSkipUrl(context.correctUrl)) {
+      if (tab && (stillOriginalPage || stillMatchingWarningPage) && !hasPendingNavigation) {
+        await chrome.tabs.remove(context.tabId).catch(() => {});
+      }
+      await chrome.tabs.create({ url: context.correctUrl }).catch(() => {});
+    } else if (tab) {
+      chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      chrome.tabs.update(context.tabId, { active: true }).catch(() => {});
+    }
+  } else if (buttonIndex === 1) {
+    await addToWhitelist(context.url || `https://${context.domain}`);
+    await removeBlockersFromWhitelistedTabs();
+    setIconWhitelist(context.tabId);
+  }
+  await chrome.notifications.clear(notificationId).catch(() => {});
+}
+
+// 通知按钮：「前往官网」/「加入白名单」
+chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
+  handleRiskNotificationButton(notificationId, buttonIndex).catch(error => {
+    console.error('[ServiceWorker] 处理桌面风险通知失败:', error);
+  });
+});
+
+// 点击通知本体 → 聚焦危险标签页（上下文只读，不消耗）
+chrome.notifications.onClicked.addListener(async (notificationId) => {
+  if (!notificationId.startsWith('risk:')) return;
+  const key = getRiskNotificationStorageKey(notificationId);
+  const stored = await getRiskNotificationStorage().get(key).catch(() => ({}));
+  const context = stored[key];
+  if (!context) return;
+  chrome.tabs.get(context.tabId).then((tab) => {
+    chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    chrome.tabs.update(context.tabId, { active: true }).catch(() => {});
+  }).catch(() => {});
+});
+
+chrome.notifications.onClosed.addListener(notificationId => {
+  scheduleRiskNotificationContextCleanup(notificationId);
 });
 
 // 标签页关闭清理
