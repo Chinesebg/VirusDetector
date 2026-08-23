@@ -3,19 +3,20 @@
  *
  * 职责：
  * - 从 URL 参数读取检测结果并渲染全屏拦截界面（页面整体替换标签页）
- * - 处理回退、前往官网、加入白名单继续访问与误报上报
+ * - 「前往官网」：有官网时打开官网；无官网时用提取的关键词打开百度搜索兜底
+ * - 「我了解风险，仍要访问」：二次确认是否加入白名单，无论是否加入都放行访问
  *
  * 前置条件：
- * - 由 Service Worker 构造 URL 参数打开本页：mode、domain、score、correctUrl、officialName、originalUrl
- *   （correctUrl/originalUrl 经 sanitizeUrl 协议白名单校验，仅允许 http/https，防 javascript: 注入）
+ * - 由 Service Worker 构造 URL 参数打开本页：mode、domain、score、correctUrl、
+ *   officialName、originalUrl、keywords
+ *   （correctUrl/originalUrl 经 sanitizeUrl 协议白名单校验，仅允许 http/https）
  *
  * 输入与输出：
- * - 输入：URL 参数 + 用户操作（回退/前往官网/信任并继续/误报上报）
- * - 副作用：信任操作经 ADD_TO_WHITELIST 回传 SW 加入白名单并跳回原网页；
- *   误报经 SUBMIT_REPORT 回传并延时自关（PHISH_CONFIRM_TIMEOUT_MS）
+ * - 输入：URL 参数 + 用户操作（前往官网/关闭/加入白名单/仅本次访问）
+ * - 副作用：ADD_TO_WHITELIST 加入白名单；ALLOW_ACCESS_ONCE 单次放行
  */
 import {
-  MSG_TYPES, REPORT_TYPES, PHISH_CONFIRM_TIMEOUT_MS
+  MSG_TYPES, BAIDU_SEARCH_URL
 } from '../utils/constants.js';
 
 (function () {
@@ -43,14 +44,13 @@ import {
   const score = Math.max(0, parseInt(params.get('score'), 10) || 0);
   const correctUrl = sanitizeUrl(params.get('correctUrl') || '');
   const originalUrl = sanitizeUrl(params.get('originalUrl') || '') || sanitizeUrl('https://' + domain);
+  const keywords = (params.get('keywords') || '').trim();
 
   document.getElementById('info-domain').textContent = domain;
   document.getElementById('dialog-domain').textContent = domain;
 
-  const pageStatusEl = document.getElementById('page-status');
   const dialogStatusEl = document.getElementById('dialog-status');
 
-  function setPageStatus(message) { pageStatusEl.textContent = message || ''; }
   function setDialogStatus(message) { dialogStatusEl.textContent = message || ''; }
 
   /** 关闭当前拦截标签页（移除标签页；异常时回退 window.close()） */
@@ -108,16 +108,7 @@ import {
     }
   }
 
-  /** 回退：回到被拦截前的原网页（同标签页历史仍在），无历史时关闭标签页 */
-  function returnToSafety() {
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      closeSelf();
-    }
-  }
-
-  /** 前往官网：关闭危险标签页并在旁边打开官网，随后关闭拦截页 */
+  /** 前往官网：关闭危险标签页并打开官网，随后关闭拦截页 */
   async function goOfficial() {
     await closeDangerousTabs(domain);
     if (correctUrl) {
@@ -126,17 +117,33 @@ import {
     closeSelf();
   }
 
+  /** 无官网时的兜底：用提取的关键词打开百度搜索 */
+  async function openSearch() {
+    const query = keywords || domain;
+    try {
+      await chrome.tabs.create({ url: BAIDU_SEARCH_URL + encodeURIComponent(query) });
+    } catch (e) {
+      console.error('[Warning] 打开搜索失败:', e);
+    }
+    closeSelf();
+  }
+
+  /** 放行访问原网页（导航由按钮的二次确认流程触发） */
+  function visitOriginal() {
+    window.location.replace(originalUrl);
+  }
+
   // ---- 主按钮 ----
 
-  document.getElementById('btn-back').addEventListener('click', returnToSafety);
+  document.getElementById('btn-official').addEventListener('click', () => {
+    if (correctUrl) {
+      goOfficial();
+    } else {
+      openSearch();
+    }
+  });
 
-  const secondBtn = document.getElementById('btn-second');
-  if (correctUrl) {
-    secondBtn.textContent = '前往官网';
-    secondBtn.addEventListener('click', goOfficial);
-  } else {
-    secondBtn.addEventListener('click', closeSelf);
-  }
+  document.getElementById('btn-close-page').addEventListener('click', closeSelf);
 
   // ---- 信任并继续访问 ----
 
@@ -147,19 +154,14 @@ import {
     trustDialog.showModal();
   });
 
-  document.getElementById('btn-cancel-trust').addEventListener('click', () => {
-    trustDialog.close();
-    returnToSafety();
-  });
-
   trustDialog.addEventListener('cancel', event => {
     event.preventDefault();
     trustDialog.close();
-    returnToSafety();
   });
 
-  document.getElementById('btn-confirm-trust').addEventListener('click', async () => {
-    const confirmBtn = document.getElementById('btn-confirm-trust');
+  // 是，加入白名单：白名单 + 放行访问
+  document.getElementById('btn-confirm-whitelist').addEventListener('click', async () => {
+    const confirmBtn = document.getElementById('btn-confirm-whitelist');
     confirmBtn.disabled = true;
     setDialogStatus('正在保存信任设置');
     try {
@@ -170,32 +172,31 @@ import {
       if (!response || response.success !== true) {
         throw new Error(response && response.error ? response.error : 'unknown_error');
       }
-      // 白名单已生效：直接回到原网页继续访问
-      window.location.replace(originalUrl);
+      visitOriginal();
     } catch (error) {
+      console.error('[Warning] 加入白名单失败:', error);
       confirmBtn.disabled = false;
-      setDialogStatus('保存失败，请重试或返回安全页面');
+      setDialogStatus('保存失败，请重试（' + (error && error.message ? error.message : '未知错误') + '）');
     }
   });
 
-  // ---- 误报上报 ----
-
-  const reportFalseBtn = document.getElementById('btn-report-false');
-  reportFalseBtn.addEventListener('click', async () => {
-    reportFalseBtn.disabled = true;
-    reportFalseBtn.textContent = '上报中...';
+  // 不，仅本次访问：单次放行（不加入白名单）+ 放行访问
+  document.getElementById('btn-visit-once').addEventListener('click', async () => {
+    const visitBtn = document.getElementById('btn-visit-once');
+    visitBtn.disabled = true;
     try {
-      await chrome.runtime.sendMessage({
-        type: MSG_TYPES.SUBMIT_REPORT,
-        payload: { reportType: REPORT_TYPES.FALSE_POSITIVE, domain, note: '' }
+      const response = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.ALLOW_ACCESS_ONCE,
+        payload: { url: originalUrl }
       });
-      reportFalseBtn.textContent = '已上报为误报，感谢反馈';
-      setPageStatus('感谢反馈，即将关闭此页面');
-      setTimeout(() => closeSelf(), PHISH_CONFIRM_TIMEOUT_MS);
-    } catch (e) {
-      console.error('[Warning] 误报上报失败:', e);
-      reportFalseBtn.textContent = '上报失败，请重试';
-      reportFalseBtn.disabled = false;
+      if (!response || response.success !== true) {
+        throw new Error(response && response.error ? response.error : 'unknown_error');
+      }
+      visitOriginal();
+    } catch (error) {
+      console.error('[Warning] 单次放行失败:', error);
+      visitBtn.disabled = false;
+      setDialogStatus('操作失败，请重试（' + (error && error.message ? error.message : '未知错误') + '）');
     }
   });
 })();

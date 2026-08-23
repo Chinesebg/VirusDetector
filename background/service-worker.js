@@ -55,6 +55,7 @@ import {
   DOWNLOAD_CONFIRM_ACTIONS, REPORT_TYPES
 } from '../utils/constants.js';
 import { SETTINGS_DEFAULTS, migrateSettings } from '../utils/settings-schema.js';
+import { extractSearchKeywords } from '../utils/search-keywords.js';
 
 // ==================== URL 协议守卫 ====================
 
@@ -709,6 +710,9 @@ const _authenticationTabs = new Set();
  * 3. 默认横幅模式：注入下载拦截脚本 + 顶部横幅，再按「拦截提示方式」提醒
  */
 async function triggerWarningFlow(tabId, tabState) {
+  // 单次放行（拦截页「仅本次访问」）：本次访问不再触发任何警告
+  if (tabState._allowOnceUrl && tabState._allowOnceUrl === tabState.url) return;
+
   const domain = tabState.domain;
   const score = tabState.score;
   const correctUrl = tabState.correctUrl;
@@ -1268,7 +1272,8 @@ async function openFullscreenWarning(tabId, tabState) {
     score: String(tabState.score || 0),
     correctUrl: tabState.correctUrl || '',
     officialName: tabState.officialName || '',
-    originalUrl: tabState.url || ''
+    originalUrl: tabState.url || '',
+    keywords: extractSearchKeywords(tabState)
   });
   const warningUrl = chrome.runtime.getURL('warning/warning-fullscreen.html?' + params.toString());
   try {
@@ -1439,6 +1444,11 @@ async function analyzePage(tabId, url, domain, pageMetrics, linkMetrics) {
   }
 
   let tabState = await loadTabState(tabId);
+
+  // 单次放行标记只对当次 URL 有效：导航到其他页面即失效
+  if (tabState._allowOnceUrl && tabState.url !== url) {
+    delete tabState._allowOnceUrl;
+  }
 
   // 白名单检查：如果在白名单中，跳过所有检测
   if (await isWhitelisted(url)) {
@@ -2542,6 +2552,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
+    // 单次放行：拦截页「仅本次访问」——本次访问不再触发警告（不加入白名单）
+    case MSG_TYPES.ALLOW_ACCESS_ONCE: {
+      chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
+        if (tabs.length === 0) { sendResponse({ success: false, error: 'no tab' }); return; }
+        const url = message.payload?.url || '';
+        if (!url) { sendResponse({ success: false, error: 'missing url' }); return; }
+        const ts = await loadTabState(tabs[0].id);
+        ts._allowOnceUrl = url;
+        // 与当次导航 URL 对齐，避免 analyzePage 的过期标记清理误删
+        ts.url = url;
+        await saveTabState(tabs[0].id, ts);
+        sendResponse({ success: true });
+      });
+      return true;
+    }
+
     case MSG_TYPES.REMOVE_FROM_WHITELIST: {
       chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
         if (tabs.length === 0) { sendResponse({ success: false, error: 'no tab' }); return; }
@@ -2902,7 +2928,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true;
     }
-    default: { sendResponse({ error: 'unknown type: ' + type }); break; }
+    default: {
+      console.warn('[ServiceWorker] 未知消息类型（请确认扩展已重新加载）:', type);
+      sendResponse({ error: 'unknown type: ' + type });
+      break;
+    }
   }
   return false;
 });

@@ -322,6 +322,8 @@ export const MSG_TYPES = {
   CHECK_UPDATE: 'CHECK_UPDATE',
   // 认证交互（页面出现登录/2FA 控件时 content → background）
   AUTH_INTERACTION_DETECTED: 'AUTH_INTERACTION_DETECTED',
+  // 单次放行：拦截页「仅本次访问」——本次访问不再触发警告（不加入白名单）
+  ALLOW_ACCESS_ONCE: 'ALLOW_ACCESS_ONCE',
   // 站点黑名单
   ADD_SITE_BLACKLIST: 'ADD_SITE_BLACKLIST',
   REMOVE_SITE_BLACKLIST: 'REMOVE_SITE_BLACKLIST',
@@ -387,6 +389,9 @@ export const REPORT_TYPES = {
  * 按来源 IP 60次/小时 的未认证限额（共享出口 IP 下极易耗尽）。
  */
 export const UPDATE_VERSION_API_URL = 'https://virus-detector-report.lolitide.workers.dev/api/version';
+
+/** 无官网时的兜底搜索入口（关键词经 encodeURIComponent 拼接） */
+export const BAIDU_SEARCH_URL = 'https://www.baidu.com/s?wd=';
 
 /** GitHub Releases API（回退源，Worker 不可达时使用） */
 export const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/Lolitide/VirusDetector/releases/latest';
