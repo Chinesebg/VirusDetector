@@ -1548,3 +1548,36 @@ select:focus {
     transition-duration: 0.01ms;
   }
 }
+
+/* ===== 设置动画预览（拦截方式 / 拦截提示方式） ===== */
+.setting-hint {
+  margin: 0 20px 12px;
+  max-width: 460px;
+  max-height: 300px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+  transition: max-height 0.28s ease, opacity 0.22s ease, margin 0.28s ease,
+    border-color 0.28s ease;
+}
+
+.setting-hint .hint-anim {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.setting-hint.is-hidden {
+  max-height: 0;
+  margin: 0 20px 0;
+  opacity: 0;
+  border-color: transparent;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setting-hint {
+    transition-duration: 0.01ms;
+  }
+}

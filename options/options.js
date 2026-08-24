@@ -176,6 +176,12 @@ class SettingsApp {
         if (!this._isVisible(setting.mode)) continue;
 
         html += this._buildSettingRow(setting);
+        // 拦截方式 / 拦截提示方式：行下方挂载效果动画预览（实时更新，循环播放）
+        if (setting.key === 'interceptionMode') {
+          html += '<div class="setting-hint" data-hint-for="interceptionMode"><img class="hint-anim" alt="拦截方式效果预览"></div>';
+        } else if (setting.key === 'alertMode') {
+          html += '<div class="setting-hint" data-hint-for="alertMode"><img class="hint-anim" alt="拦截提示方式效果预览"></div>';
+        }
       }
 
       html += `</div>`;
@@ -186,6 +192,7 @@ class SettingsApp {
 
     this._syncInputsWithSettings();
     this._applyAlertModeVisibility();
+    this._updateHintPreviews();
   }
 
   /** 构建单个设置行的 HTML */
@@ -658,6 +665,11 @@ class SettingsApp {
       this._applyAlertModeVisibility();
     }
 
+    // 拦截方式/提示方式：实时刷新动画预览
+    if (key === 'interceptionMode' || key === 'alertMode') {
+      this._updateHintPreviews();
+    }
+
     this._saveSettings();
   }
 
@@ -672,12 +684,43 @@ class SettingsApp {
     this._presetOverrides = { ...presetDef.overrides };
   }
 
-  /** 全屏覆盖模式下无需提示方式：联动隐藏/显示 alertMode 行（过渡动画见 CSS） */
+  /**
+   * 联动可见性：
+   * - 全屏覆盖模式：隐藏 alertMode 行与其预览，预览仅在「拦截方式」下方显示
+   * - 非全屏（横幅）模式：提示方式行可见，预览仅在「拦截提示方式」下方显示
+   */
   _applyAlertModeVisibility() {
-    const row = document.querySelector('.setting-row[data-key="alertMode"]');
-    if (!row) return;
     const fullscreen = this._getEffectiveValue('interceptionMode') === 'fullscreen';
-    row.classList.toggle('is-hidden', fullscreen);
+    const row = document.querySelector('.setting-row[data-key="alertMode"]');
+    const alertHint = document.querySelector('[data-hint-for="alertMode"]');
+    const interceptionHint = document.querySelector('[data-hint-for="interceptionMode"]');
+    if (row) row.classList.toggle('is-hidden', fullscreen);
+    if (alertHint) alertHint.classList.toggle('is-hidden', fullscreen);
+    if (interceptionHint) interceptionHint.classList.toggle('is-hidden', !fullscreen);
+  }
+
+  /** 按当前设置刷新拦截效果动画预览（循环播放由 WebP 动图原生支持） */
+  _updateHintPreviews() {
+    const HINT_FILES = { popup: 'hint_1', notification: 'hint_2', none: 'hint_0' };
+    const interceptionMode = this._getEffectiveValue('interceptionMode');
+    const alertMode = this._getEffectiveValue('alertMode');
+
+    const setHint = (key, src) => {
+      const img = document.querySelector('[data-hint-for="' + key + '"] img.hint-anim');
+      if (!img) return;
+      if (img.dataset.src === src) return;
+      img.dataset.src = src;
+      if (src) img.src = src; else img.removeAttribute('src');
+    };
+
+    if (interceptionMode === 'fullscreen') {
+      setHint('interceptionMode', 'hint-rsc/block_2.webp');
+      setHint('alertMode', ''); // 提示方式行已联动隐藏
+      return;
+    }
+    const hint = HINT_FILES[alertMode] || 'hint_0';
+    setHint('interceptionMode', 'hint-rsc/block_1-' + hint + '.webp');
+    setHint('alertMode', 'hint-rsc/block_1-' + hint + '.webp');
   }
 
   // ==================== 模式切换 ====================
