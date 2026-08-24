@@ -180,6 +180,7 @@ import {
     }
   });
 
+
   // 不，仅本次访问：单次放行（不加入白名单）+ 放行访问
   document.getElementById('btn-visit-once').addEventListener('click', async () => {
     const visitBtn = document.getElementById('btn-visit-once');
@@ -198,5 +199,69 @@ import {
       visitBtn.disabled = false;
       setDialogStatus('操作失败，请重试（' + (error && error.message ? error.message : '未知错误') + '）');
     }
+  });
+})();
+
+// ==================== 底部链接与报告对话框（新增，独立块，不影响既有逻辑） ====================
+
+(async function () {
+  'use strict';
+
+  // 动态导入新增模块符号，避免改动顶部既有 import 语句
+  const { REPORT_TYPES, PHISH_CONFIRM_TIMEOUT_MS } = await import('../utils/constants.js');
+
+  const params = new URLSearchParams(window.location.search);
+  const domain = params.get('domain') || '未知网站';
+
+  const reportDialog = document.getElementById('report-dialog');
+  const reportStatusEl = document.getElementById('report-status');
+
+  function setReportStatus(message) {
+    if (reportStatusEl) reportStatusEl.textContent = message || '';
+  }
+
+  // 打开报告对话框
+  document.getElementById('btn-report-link').addEventListener('click', () => {
+    setReportStatus('');
+    reportDialog.showModal();
+  });
+
+  // 右上角叉叉 / Esc 关闭
+  document.getElementById('btn-report-close').addEventListener('click', () => reportDialog.close());
+  reportDialog.addEventListener('cancel', event => {
+    event.preventDefault();
+    reportDialog.close();
+  });
+
+  /**
+   * 提交指定类型的报告（与 popup 页面的误报/钓鱼按钮同款功能：SUBMIT_REPORT）
+   * @param {HTMLButtonElement} button 触发按钮
+   * @param {string} reportType REPORT_TYPES 枚举值
+   */
+  async function submitReport(button, reportType) {
+    button.disabled = true;
+    setReportStatus('上报中...');
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.SUBMIT_REPORT,
+        payload: { reportType, domain, note: '' }
+      });
+      if (response && response.success === false) {
+        throw new Error(response.error || 'submit_failed');
+      }
+      setReportStatus('已上报，感谢反馈');
+      setTimeout(() => reportDialog.close(), PHISH_CONFIRM_TIMEOUT_MS);
+    } catch (e) {
+      console.error('[Warning] 报告提交失败:', e);
+      button.disabled = false;
+      setReportStatus('上报失败，请重试');
+    }
+  }
+
+  document.getElementById('btn-report-false').addEventListener('click', (e) => {
+    submitReport(e.currentTarget, REPORT_TYPES.FALSE_POSITIVE);
+  });
+  document.getElementById('btn-report-phish').addEventListener('click', (e) => {
+    submitReport(e.currentTarget, REPORT_TYPES.CONFIRMED_PHISH);
   });
 })();

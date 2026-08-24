@@ -17,7 +17,29 @@
       </div>
 
       <div class="warning-heading">
-        <div class="risk-symbol" aria-hidden="true">!</div>
+        <svg
+          role="img"
+          xmlns="http://www.w3.org/2000/svg"
+          width="64px"
+          height="64px"
+          viewBox="0 0 24 24"
+          aria-labelledby="errorIconTitle"
+        >
+          <title id="errorIconTitle">Error</title>
+          <circle cx="12" cy="12" r="10" fill="#FF5B61"/>
+          <path
+            d="M12 6.2
+              C10.95 6.2 10.35 6.9 10.45 7.9
+              L10.95 13.65
+              C11 14.35 11.4 14.75 12 14.75
+              C12.6 14.75 13 14.35 13.05 13.65
+              L13.55 7.9
+              C13.65 6.9 13.05 6.2 12 6.2
+              Z"
+            fill="#FFFFFF"
+          />
+          <circle cx="12" cy="17.2" r="1.25" fill="#FFFFFF"/>
+        </svg>
         <h1 id="warning-title">已阻止打开此网页</h1>
       </div>
       <p class="message">
@@ -45,6 +67,36 @@
         <button id="btn-visit-once" class="dialog-button dialog-button-danger" type="button" autofocus>不，仅本次访问</button>
       </div>
       <p id="dialog-status" class="status" role="status" aria-live="polite"></p>
+    </div>
+  </dialog>
+
+  <footer class="warning-footer">
+    <button id="btn-report-link" class="footer-link" type="button">此报告有误？</button>
+    <span class="footer-sep">/</span>
+    <a id="github-link" class="footer-link" href="https://github.com/Lolitide/VirusDetector" target="_blank" rel="noopener noreferrer" title="GitHub 仓库">
+      <svg class="github-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+      <span>Lolitide·VirusDetector</span>
+    </a>
+  </footer>
+
+  <!-- 报告反馈对话框：误报 / 钓鱼 -->
+  <dialog id="report-dialog" class="trust-dialog" aria-labelledby="report-title" aria-describedby="report-description">
+    <div class="dialog-content">
+      <button id="btn-report-close" class="report-close" type="button" aria-label="关闭">×</button>
+      <h2 id="report-title">此报告有误？</h2>
+      <p id="report-description">请选择本次拦截的判定类型，帮助我们改进检测：</p>
+
+      <div class="dialog-actions report-actions-stack">
+        <button id="btn-report-false" class="dialog-button dialog-button-danger report-button" type="button">
+          <span>误报</span>
+          <small>该网站实际安全，本次拦截判定有误</small>
+        </button>
+        <button id="btn-report-phish" class="dialog-button dialog-button-primary report-button" type="button">
+          <span>钓鱼</span>
+          <small>确认该网站确为钓鱼 / 恶意网站</small>
+        </button>
+      </div>
+      <p id="report-status" class="status" role="status" aria-live="polite"></p>
     </div>
   </dialog>
 

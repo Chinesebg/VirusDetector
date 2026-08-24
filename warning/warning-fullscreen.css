@@ -402,3 +402,154 @@ h1 {
     border-color: var(--text);
   }
 }
+
+.warning-footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--tertiary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 140ms ease;
+}
+
+.footer-link:hover {
+  color: var(--blue);
+}
+
+.footer-link:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.footer-sep {
+  color: var(--tertiary);
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+.github-icon {
+  display: block;
+}
+
+/* ===== 报告反馈对话框 ===== */
+.report-actions-stack {
+  grid-template-columns: 1fr;
+}
+
+.report-button {
+  display: flex;
+  flex-direction: horizontal;
+  align-items: center;
+  font-size: 20px;
+  gap: 20px;
+  text-align: left;
+}
+
+.report-button small {
+  font-size: 14px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.report-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+
+[data-theme="light"] #btn-report-false {
+  background: #fff3e0;
+  color: #f57c00;
+  border-color: #f57c00;
+}
+
+[data-theme="dark"] #btn-report-false {
+  background: rgba(255, 152, 0, 0.12);
+  color: #ff9800;
+  border-color: #ff9800;
+}
+
+[data-theme="light"] #btn-report-false:hover:not(:disabled) {
+  background: #ffe0b2;
+  color: #e15306;
+  border-color: #e15306;
+}
+
+[data-theme="light"] #btn-report-phish {
+  background: #ffebee;
+  color: #f44336;
+  border-color: #f44336;
+}
+
+[data-theme="dark"] #btn-report-phish {
+  background: rgba(244, 67, 54, 0.12);
+  color: #f44336;
+  border-color: #f44336;
+}
+
+[data-theme="light"] #btn-report-phish:hover:not(:disabled) {
+  background: #ffcdd2;
+  color: #c62828;
+  border-color: #c62828;
+}
+
+/* ===== 报告对话框：右上角关闭、加宽与间距 ===== */
+.dialog-content {
+  position: relative;
+}
+
+#report-dialog {
+  width: min(460px, calc(100% - 24px));
+}
+
+.report-actions-stack {
+  gap: 14px;
+}
+
+.report-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--tertiary);
+  font: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.report-close:hover {
+  color: var(--text);
+  background: var(--surface-muted);
+}
+
+.report-close:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
