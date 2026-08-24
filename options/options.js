@@ -697,30 +697,47 @@ class SettingsApp {
     if (row) row.classList.toggle('is-hidden', fullscreen);
     if (alertHint) alertHint.classList.toggle('is-hidden', fullscreen);
     if (interceptionHint) interceptionHint.classList.toggle('is-hidden', !fullscreen);
+    // 可见性变化后同步播放器（接续当前进度）
+    this._hintSyncPlayer();
   }
 
-  /** 按当前设置刷新拦截效果动画预览（循环播放由 WebP 动图原生支持） */
+  /** 按当前设置计算并刷新动画预览（循环播放；切换时接续当前播放进度） */
   _updateHintPreviews() {
     const HINT_FILES = { popup: 'hint_1', notification: 'hint_2', none: 'hint_0' };
     const interceptionMode = this._getEffectiveValue('interceptionMode');
     const alertMode = this._getEffectiveValue('alertMode');
 
-    const setHint = (key, src) => {
-      const img = document.querySelector('[data-hint-for="' + key + '"] img.hint-anim');
-      if (!img) return;
-      if (img.dataset.src === src) return;
-      img.dataset.src = src;
-      if (src) img.src = src; else img.removeAttribute('src');
-    };
-
+    let interceptionSrc = '';
+    let alertSrc = '';
     if (interceptionMode === 'fullscreen') {
-      setHint('interceptionMode', 'hint-rsc/block_2.webp');
-      setHint('alertMode', ''); // 提示方式行已联动隐藏
+      interceptionSrc = 'hint-rsc/block_2.webp';
+    } else {
+      const hint = HINT_FILES[alertMode] || 'hint_0';
+      interceptionSrc = 'hint-rsc/block_1-' + hint + '.webp';
+      alertSrc = interceptionSrc;
+    }
+    this._hintSrcs = { interceptionMode: interceptionSrc, alertMode: alertSrc };
+    this._hintSyncPlayer();
+  }
+
+  /** 仅可见侧驱动播放；切换时沿用同一播放进度实现无缝接续 */
+  _hintSyncPlayer() {
+    if (!hintPreviewSupported()) {
+      // 降级：不支持 WebCodecs 时用 <img> 原生循环播放
+      for (const key of ['interceptionMode', 'alertMode']) {
+        const img = document.querySelector('[data-hint-for="' + key + '"] img.hint-anim');
+        const src = this._hintSrcs && this._hintSrcs[key];
+        if (img && src) img.src = src;
+      }
       return;
     }
-    const hint = HINT_FILES[alertMode] || 'hint_0';
-    setHint('interceptionMode', 'hint-rsc/block_1-' + hint + '.webp');
-    setHint('alertMode', 'hint-rsc/block_1-' + hint + '.webp');
+    const fullscreen = this._getEffectiveValue('interceptionMode') === 'fullscreen';
+    const key = fullscreen ? 'interceptionMode' : 'alertMode';
+    const src = (this._hintSrcs && this._hintSrcs[key]) || '';
+    const container = document.querySelector('[data-hint-for="' + key + '"]');
+    if (!src || !container) return;
+    const canvas = ensureHintCanvas(container);
+    hintPreviewSwitch(canvas, src);
   }
 
   // ==================== 模式切换 ====================
@@ -1677,3 +1694,121 @@ SettingsApp.prototype._loadStorageStats = async function () {
     statsEl.innerHTML = `<span style="color:var(--text3)">无法加载存储统计: ${e.message}</span>`;
   }
 };
+
+// ==================== 动画预览播放器（WebCodecs，切换时接续播放进度） ====================
+// 四种动画时长一致：用 ImageDecoder 解码动图绘制到 canvas，切换模式时沿用
+// 同一微秒级进度，实现从原位置无缝接续；不支持 WebCodecs 时降级为 <img> 循环播放。
+
+const _hintPreview = {
+  canvas: null, ctx: null, decoder: null, src: '',
+  frameCount: 1, frameDurUs: 100000, frameDurationsUs: null, totalUs: 100000,
+  currentUs: 0, lastTs: 0, frameIdx: -1, rafId: 0
+};
+
+function hintPreviewSupported() {
+  return typeof globalThis.ImageDecoder === 'function' &&
+    typeof requestAnimationFrame === 'function';
+}
+
+/** 将预览容器内的 <img> 替换为同等尺寸的 canvas（仅替换一次） */
+function ensureHintCanvas(container) {
+  let canvas = container.querySelector('canvas.hint-anim');
+  if (canvas) return canvas;
+  canvas = document.createElement('canvas');
+  canvas.className = 'hint-anim';
+  canvas.width = 640;
+  canvas.height = 360;
+  const img = container.querySelector('img.hint-anim');
+  if (img) img.replaceWith(canvas); else container.appendChild(canvas);
+  return canvas;
+}
+
+/** rAF 播放循环：按时间推进帧索引并解码绘制，超总时长后回绕（循环播放） */
+function hintPreviewFrame() {
+  const p = _hintPreview;
+  if (!p.decoder) return;
+  const now = performance.now();
+  p.currentUs += (now - p.lastTs) * 1000;
+  p.lastTs = now;
+  if (p.totalUs > 0) p.currentUs = p.currentUs % p.totalUs; // 循环回绕
+  let idx;
+  if (p.frameDurationsUs) {
+    // 逐帧时长来自文件解析（ANMF），与原生播放速度一致
+    let acc = 0;
+    idx = p.frameCount - 1;
+    for (let i = 0; i < p.frameDurationsUs.length; i++) {
+      acc += p.frameDurationsUs[i];
+      if (p.currentUs < acc) { idx = i; break; }
+    }
+  } else {
+    idx = Math.min(p.frameCount - 1, Math.floor(p.currentUs / p.frameDurUs));
+  }
+  if (idx !== p.frameIdx) {
+    p.frameIdx = idx;
+    p.decoder.decode({ frameIndex: idx }).then(({ image }) => {
+      if (p.decoder && p.ctx) p.ctx.drawImage(image, 0, 0);
+      image.close();
+    }).catch(() => { /* 单帧解码失败，跳过 */ });
+  }
+  p.rafId = requestAnimationFrame(hintPreviewFrame);
+}
+
+/** 解析 WebP 动图每帧时长（ANMF 块，微秒）；失败返回 null */
+function parseWebpFrameDurationsUs(buffer) {
+  const b = new Uint8Array(buffer);
+  if (b[0] !== 0x52 || b[1] !== 0x49 || b[2] !== 0x46 || b[3] !== 0x46) return null; // RIFF
+  const durations = [];
+  let off = 12;
+  while (off + 8 <= b.length) {
+    const size = b[off + 4] | (b[off + 5] << 8) | (b[off + 6] << 16) | (b[off + 7] << 24);
+    const tag = String.fromCharCode(b[off], b[off + 1], b[off + 2], b[off + 3]);
+    if (tag === 'ANMF') {
+      // 帧头 16 字节：x(3)/y(3)/w(3)/h(3)/duration(3,毫秒)/flags(1)
+      const durMs = b[off + 8 + 12] | (b[off + 8 + 13] << 8) | (b[off + 8 + 14] << 16);
+      durations.push(durMs * 1000);
+    }
+    off += 8 + size + (size & 1);
+  }
+  return durations.length ? durations : null;
+}
+
+/** 切换到新动画源并接续当前播放进度（四种动画时长一致，进度可直接沿用） */
+async function hintPreviewSwitch(canvas, src) {
+  const p = _hintPreview;
+  if (p.src === src && p.canvas === canvas) return;
+  cancelAnimationFrame(p.rafId);
+  if (p.decoder) {
+    try { p.decoder.close(); } catch (e) { /* ignore */ }
+    p.decoder = null;
+  }
+  p.canvas = canvas;
+  p.ctx = canvas.getContext('2d');
+  p.src = src;
+  p.frameIdx = -1;
+  try {
+    const resp = await fetch(src);
+    if (!resp.ok) return;
+    const buf = await resp.arrayBuffer();
+    const decoder = new globalThis.ImageDecoder({ data: buf, type: 'image/webp' });
+    await decoder.tracks.ready;
+    const track = decoder.tracks.selectedTrack;
+    if (!track) { decoder.close(); return; }
+    p.decoder = decoder;
+    // 帧时长以文件 ANMF 块为准（实测 33ms/帧；ImageDecoder 的
+    // frameDuration 在部分版本下缺失/为 0，曾导致 100ms/帧回退 → 播放 3 倍慢）
+    const parsedDurations = parseWebpFrameDurationsUs(buf);
+    p.frameDurationsUs = parsedDurations;
+    if (parsedDurations) {
+      p.frameCount = parsedDurations.length;
+      p.totalUs = parsedDurations.reduce((a, c) => a + c, 0);
+    } else {
+      p.frameCount = track.frameCount || 1;
+      p.frameDurUs = track.frameDuration || 33333; // 与实测平均帧长一致的兜底
+      p.totalUs = track.duration || p.frameCount * p.frameDurUs;
+      p.frameDurationsUs = null;
+    }
+    p.currentUs = p.currentUs % p.totalUs; // 沿用旧进度（时长一致 → 无缝接续）
+    p.lastTs = performance.now();
+    p.rafId = requestAnimationFrame(hintPreviewFrame);
+  } catch (e) { /* 动画加载失败：保持画布空白 */ }
+}
