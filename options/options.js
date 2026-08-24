@@ -4,24 +4,39 @@
  * 负责设置页的全部交互逻辑：加载/渲染/保存设置、基础/高级模式切换、
  * 灵敏度预设应用、导入/导出/恢复默认、Toast 通知等。
  *
+ * 前置条件：
+ *   - 依赖 utils/settings-schema.js（SETTINGS_DEFAULTS/SECTIONS/灵敏度预设/schema 迁移）与
+ *     utils/constants.js 常量；依赖 options.html 的固定元素 id 与结构，以及 localStorage
+ *     缓存的模式与分区键（UI_KEYS.ACTIVE_SECTION/MODE）
+ *
+ * 输入与输出：
+ *   - 输入：用户交互 + chrome.storage.local 中持久化的 GLOBAL_SETTINGS（保存前经
+ *     validateSetting/migrateSettings 校验与迁移）
+ *   - 输出：保存设置写回 chrome.storage.local；模式/主题切换、灵敏度预设等即时生效并
+ *     Toast 反馈；导入/导出/恢复默认同步更新存储
+ *
  * @module options
  */
 
-import { SETTINGS_DEFAULTS, SECTIONS, SENSITIVITY_PRESETS, SCHEMA_VERSION, validateSetting } from '../utils/settings-schema.js';
-import { STORAGE_KEYS, MSG_TYPES, VERSION } from '../utils/constants.js';
+import { SETTINGS_DEFAULTS, SECTIONS, SENSITIVITY_PRESETS, SCHEMA_VERSION, validateSetting, migrateSettings } from '../utils/settings-schema.js';
+import { normalizeWhitelistEntry } from '../utils/whitelist-matcher.js';
+import {
+  STORAGE_KEYS, MSG_TYPES, VERSION, UPDATE_CHANNEL,
+  UI_KEYS, ADVANCED_ONLY_SECTIONS, PRESET_LEVELS,
+  TOAST_DURATION_MS, GITHUB_REPO_PAGE, GITHUB_NEW_ISSUE_URL, GITHUB_RELEASES_PAGE
+} from '../utils/constants.js';
 
+/** 设置页主控制器：持有运行时设置状态，提供加载/渲染/保存、模式切换、预设应用等交互逻辑 */
 class SettingsApp {
   constructor() {
     /** @type {Object} 当前设置（运行时状态） */
     this.settings = { ...SETTINGS_DEFAULTS };
     /** @type {string} 当前显示的 section ID */
-    this._activeSection = localStorage.getItem('vt_activeSection') || 'general';
+    this._activeSection = localStorage.getItem(UI_KEYS.ACTIVE_SECTION) || 'general';
     /** @type {'basic'|'advanced'} 当前模式 */
-    this._mode = localStorage.getItem('vt_mode') || 'basic';
-    // 基本模式下不在高级专属分区
+    this._mode = localStorage.getItem(UI_KEYS.MODE) || 'basic';
     if (this._mode === 'basic') {
-      const advancedOnly = ['thresholds', 'download', 'blacklist'];
-      if (advancedOnly.includes(this._activeSection)) {
+      if (ADVANCED_ONLY_SECTIONS.includes(this._activeSection)) {
         this._activeSection = 'general';
       }
     }
@@ -42,6 +57,7 @@ class SettingsApp {
     this._renderSection(this._activeSection);
     this._bindEvents();
     this._applyModeToDom();
+    this._watchSystemTheme();
 
     console.log('[Settings] 设置页已初始化, schemaVersion:', SCHEMA_VERSION);
   }
@@ -52,15 +68,16 @@ class SettingsApp {
     try {
       const r = await chrome.storage.local.get(STORAGE_KEYS.GLOBAL_SETTINGS);
       const stored = r[STORAGE_KEYS.GLOBAL_SETTINGS] || {};
-      // 合并：新键用默认值，已存储的键覆盖默认值
-      this.settings = { ...SETTINGS_DEFAULTS, ...stored };
-      // 同步 localStorage 主题镜像（确保后续页面加载无闪烁）
-      try { localStorage.setItem('vt_theme', this.settings.theme || 'dark'); } catch(e) {}
-      // Schema 迁移检测
-      if (stored._schemaVersion !== SCHEMA_VERSION) {
-        console.log('[Settings] Schema 版本变更:', stored._schemaVersion, '→', SCHEMA_VERSION);
-        // 未来在此处添加迁移逻辑
+      // Schema 迁移（如 v1→v2 修正 apihz 键名）：有变更时写回存储
+      const migrated = migrateSettings(stored);
+      if (migrated !== stored) {
+        console.log('[Settings] Schema 迁移:', stored._schemaVersion ?? 1, '→', SCHEMA_VERSION);
+        await chrome.storage.local.set({ [STORAGE_KEYS.GLOBAL_SETTINGS]: migrated });
       }
+      // 合并：新键用默认值，已存储的键覆盖默认值
+      this.settings = { ...SETTINGS_DEFAULTS, ...migrated };
+      // 同步 localStorage 主题镜像（确保后续页面加载无闪烁）
+      try { localStorage.setItem(UI_KEYS.THEME, this.settings.theme || 'dark'); } catch (e) { }
     } catch (e) {
       console.error('[Settings] 加载设置失败:', e);
       this.settings = { ...SETTINGS_DEFAULTS };
@@ -76,7 +93,7 @@ class SettingsApp {
     try {
       await chrome.storage.local.set({ [STORAGE_KEYS.GLOBAL_SETTINGS]: toStore });
       // 同步写入 localStorage 以便页面加载时无闪烁读取主题
-      try { localStorage.setItem('vt_theme', this.settings.theme || 'dark'); } catch(e) {}
+      try { localStorage.setItem(UI_KEYS.THEME, this.settings.theme || 'dark'); } catch (e) { }
       this._broadcastUpdate();
       console.log('[Settings] 已自动保存');
     } catch (e) {
@@ -124,21 +141,17 @@ class SettingsApp {
     const container = document.getElementById('section-container');
     if (!container) return;
 
-    // 高亮侧栏
     document.querySelectorAll('.nav-item').forEach(el => {
       el.classList.toggle('active', el.dataset.section === sectionId);
     });
 
-    // 自定义渲染 Section（白名单、黑名单）
     if (section.type === 'custom' && typeof this[section.renderFn] === 'function') {
       this[section.renderFn](container, section);
       return;
     }
 
-    // 关于页特殊处理
     if (section.noCard) {
       container.innerHTML = this._buildAboutHTML();
-      // 异步加载更新信息
       this._loadUpdateInfo();
       this._loadStorageStats();
       return;
@@ -154,7 +167,6 @@ class SettingsApp {
     `;
 
     for (const group of section.groups) {
-      // 过滤模式
       if (!this._isVisible(group.mode)) continue;
 
       html += `<div class="settings-card" id="card-${group.id}">
@@ -164,6 +176,12 @@ class SettingsApp {
         if (!this._isVisible(setting.mode)) continue;
 
         html += this._buildSettingRow(setting);
+        // 拦截方式 / 拦截提示方式：行下方挂载效果动画预览（实时更新，循环播放）
+        if (setting.key === 'interceptionMode') {
+          html += '<div class="setting-hint" data-hint-for="interceptionMode"><img class="hint-anim" alt="拦截方式效果预览"></div>';
+        } else if (setting.key === 'alertMode') {
+          html += '<div class="setting-hint" data-hint-for="alertMode"><img class="hint-anim" alt="拦截提示方式效果预览"></div>';
+        }
       }
 
       html += `</div>`;
@@ -172,8 +190,9 @@ class SettingsApp {
     html += `</div>`;
     container.innerHTML = html;
 
-    // 渲染后同步控件值与当前 settings
     this._syncInputsWithSettings();
+    this._applyAlertModeVisibility();
+    this._updateHintPreviews();
   }
 
   /** 构建单个设置行的 HTML */
@@ -198,27 +217,33 @@ class SettingsApp {
             </div>
           </div>`;
 
-      case 'theme':
+      case 'theme': {
+        const themeValue = value || 'dark';
+        const themes = [
+          { val: 'dark', label: '深色', icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>' },
+          { val: 'light', label: '浅色', icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>' },
+          { val: 'auto', label: '系统', icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>' }
+        ];
+        const segsHTML = themes.map(t =>
+          `<button type="button" class="theme-seg${t.val === themeValue ? ' active' : ''}" data-theme-val="${t.val}" title="${t.label}">${t.icon}</button>`
+        ).join('');
         return `
-          <div class="setting-row theme-setting-row" data-key="${setting.key}" data-mode="${setting.mode || 'basic'}">
+          <div class="setting-row" data-key="${setting.key}" data-mode="${setting.mode || 'basic'}">
             <div class="setting-info">
               <div class="setting-label">${setting.label}</div>
               <div class="setting-desc">${setting.desc}</div>
             </div>
             <div class="setting-control">
-              <label class="toggle theme-toggle">
-                <input type="checkbox" class="setting-input" data-key="${setting.key}" data-type="theme"
-                  ${value === 'light' ? 'checked' : ''}>
-                <span class="toggle-slider"></span>
-                <span class="theme-icon theme-icon-sun">☀️</span>
-                <span class="theme-icon theme-icon-moon">🌙</span>
-              </label>
+              <div class="theme-segmented" data-key="${setting.key}">
+                ${segsHTML}
+              </div>
             </div>
           </div>`;
+      }
 
       case 'preset':
-        const presetValue = value || 'medium';
-        const steps = ['low', 'medium', 'high'];
+        const presetValue = value || PRESET_LEVELS[1];   // 'medium'
+        const steps = PRESET_LEVELS.slice(0, 3);         // ['low', 'medium', 'high']
         const labels = { low: '低', medium: '中', high: '高' };
         const descs = { low: '仅高风险', medium: '均衡检测', high: '最严格' };
         return `
@@ -255,9 +280,15 @@ class SettingsApp {
             </div>
           </div>`;
 
-      case 'select':
+      case 'select': {
+        const selectedOpt = (setting.options || []).find(o => o.value === value) || (setting.options || [])[0];
         const optionsHTML = (setting.options || []).map(opt =>
-          `<option value="${opt.value}" ${value === opt.value ? 'selected' : ''}>${opt.label}</option>`
+          `<button type="button" class="vt-select-option${opt.value === selectedOpt?.value ? ' selected' : ''}"
+            data-value="${opt.value}" data-label="${opt.label}" role="option"
+            aria-selected="${opt.value === selectedOpt?.value}">
+            <span>${opt.label}</span>
+            <svg class="vt-select-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+          </button>`
         ).join('');
         return `
           <div class="setting-row" data-key="${setting.key}" data-mode="${setting.mode || 'basic'}">
@@ -266,7 +297,29 @@ class SettingsApp {
               <div class="setting-desc">${setting.desc}</div>
             </div>
             <div class="setting-control">
-              <select class="setting-input" data-key="${setting.key}" data-type="select">${optionsHTML}</select>
+              <div class="vt-select" data-key="${setting.key}" data-type="select">
+                <button type="button" class="vt-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="vt-select-value">${selectedOpt ? selectedOpt.label : ''}</span>
+                  <svg class="vt-select-arrow" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="vt-select-menu" role="listbox">${optionsHTML}</div>
+              </div>
+            </div>
+          </div>`;
+      }
+
+      case 'text':
+        return `
+          <div class="setting-row" data-key="${setting.key}" data-mode="${setting.mode || 'basic'}">
+            <div class="setting-info">
+              <div class="setting-label">${setting.label}</div>
+              <div class="setting-desc">${setting.desc}</div>
+            </div>
+            <div class="setting-control">
+              <input type="text" class="setting-input text-input" autocomplete="off" spellcheck="false"
+                data-key="${setting.key}" data-type="text"
+                value="${this._escapeHtml(value)}" placeholder="${setting.placeholder || ''}"
+                ${this._isInputDisabled(setting) ? 'disabled' : ''}>
             </div>
           </div>`;
 
@@ -302,13 +355,24 @@ class SettingsApp {
 
       if (type === 'boolean') {
         input.checked = !!value;
-      } else if (type === 'theme') {
-        input.checked = value === 'light';
       } else if (type === 'number') {
         input.value = value;
-      } else if (type === 'select') {
+      } else if (type === 'text') {
         input.value = value;
       }
+    }
+
+    // 自定义下拉：同步选中项与显示值
+    for (const sel of container.querySelectorAll('.vt-select')) {
+      const key = sel.dataset.key;
+      const value = this._getEffectiveValue(key);
+      sel.querySelectorAll('.vt-select-option').forEach(opt => {
+        opt.classList.toggle('selected', opt.dataset.value === String(value));
+        opt.setAttribute('aria-selected', opt.dataset.value === String(value) ? 'true' : 'false');
+      });
+      const active = sel.querySelector('.vt-select-option.selected');
+      const labelEl = sel.querySelector('.vt-select-value');
+      if (labelEl && active) labelEl.textContent = active.dataset.label || String(value);
     }
   }
 
@@ -328,8 +392,7 @@ class SettingsApp {
   _isInputDisabled(setting) {
     if (setting.type !== 'number') return false;
     const preset = this.settings.sensitivityPreset || SETTINGS_DEFAULTS.sensitivityPreset;
-    if (preset === 'medium') return false;
-    // 检查此 key 是否在预设的 overrides 中
+    if (preset === PRESET_LEVELS[1]) return false;   // 'medium'（无覆盖，均可用）
     const overrides = SENSITIVITY_PRESETS[preset]?.overrides || {};
     return setting.key in overrides;
   }
@@ -340,7 +403,6 @@ class SettingsApp {
     const app = document.getElementById('app');
     if (!app) return;
 
-    // change 事件：输入控件
     app.addEventListener('change', (e) => {
       const target = e.target;
       if (target.matches('.setting-input')) {
@@ -348,10 +410,22 @@ class SettingsApp {
       }
     });
 
-    // click 事件委托
     app.addEventListener('click', (e) => {
-      const target = e.target.closest('.nav-item, [data-section], [data-preset], #import-btn, #export-btn, #reset-btn, .mode-segment, [data-action], #modal-cancel-btn, #modal-confirm-btn, #check-update-btn, #download-update-btn');
+      const target = e.target.closest('.nav-item, [data-section], [data-preset], #import-btn, #export-btn, #reset-btn, .mode-segment, [data-action], #modal-cancel-btn, #modal-confirm-btn, #check-update-btn, #download-update-btn, .theme-seg');
       if (!target) return;
+
+      if (target.matches('.theme-seg')) {
+        const themeVal = target.dataset.themeVal;
+        if (themeVal && themeVal !== this.settings.theme) {
+          target.parentElement.querySelectorAll('.theme-seg').forEach(s =>
+            s.classList.toggle('active', s.dataset.themeVal === themeVal)
+          );
+          this.settings.theme = themeVal;
+          this._applyTheme();
+          this._saveSettings();
+        }
+        return;
+      }
 
       if (target.matches('.nav-item') || target.dataset.section) {
         const sectionId = target.dataset.section || target.closest('.nav-item')?.dataset?.section;
@@ -381,7 +455,6 @@ class SettingsApp {
       }
     });
 
-    // 文件导入
     const fileInput = document.getElementById('import-file');
     if (fileInput) {
       fileInput.addEventListener('change', (e) => {
@@ -393,7 +466,7 @@ class SettingsApp {
     }
 
     // 灵敏度预设滑块拖拽
-    const STEPS = ['low', 'medium', 'high'];
+    const STEPS = PRESET_LEVELS.slice(0, 3);   // ['low', 'medium', 'high']
     let dragging = false;
 
     const getRatioFromX = (clientX) => {
@@ -465,7 +538,6 @@ class SettingsApp {
     document.addEventListener('mouseup', onDragEnd);
     document.addEventListener('touchend', onDragEnd);
 
-    // 点击轨道直接跳转
     app.addEventListener('click', (e) => {
       if (e.target.closest('.preset-thumb') || e.target.closest('.preset-label')) return;
       if (!e.target.closest('.preset-track')) return;
@@ -475,29 +547,69 @@ class SettingsApp {
       }
     });
 
-    // Drawer toggle (hamburger button)
     const drawerToggle = document.getElementById('drawer-toggle-btn');
     if (drawerToggle) {
       drawerToggle.addEventListener('click', () => this._toggleDrawer());
     }
 
-    // Drawer close button (inside sidebar)
     const drawerClose = document.getElementById('drawer-close-btn');
     if (drawerClose) {
       drawerClose.addEventListener('click', () => this._closeDrawer());
     }
 
-    // Overlay click to close drawer
     const drawerOverlay = document.getElementById('drawer-overlay');
     if (drawerOverlay) {
       drawerOverlay.addEventListener('click', () => this._closeDrawer());
     }
 
-    // Auto-close drawer when resizing from narrow to wide
     window.addEventListener('resize', () => {
       if (window.innerWidth > 720) {
         this._closeDrawer();
       }
+    });
+
+    // ---- 自定义下拉（vt-select）：展开/收起、选择、点击外部与 Esc 关闭 ----
+
+    const closeAllVtSelects = () => {
+      document.querySelectorAll('.vt-select.open').forEach(s => {
+        s.classList.remove('open');
+        s.querySelector('.vt-select-trigger')?.setAttribute('aria-expanded', 'false');
+      });
+    };
+
+    app.addEventListener('click', (e) => {
+      const trigger = e.target.closest('.vt-select-trigger');
+      if (trigger) {
+        const select = trigger.closest('.vt-select');
+        const willOpen = !select.classList.contains('open');
+        closeAllVtSelects();
+        if (willOpen) {
+          select.classList.add('open');
+          select.querySelector('.vt-select-trigger').setAttribute('aria-expanded', 'true');
+        }
+        return;
+      }
+
+      const option = e.target.closest('.vt-select-option');
+      if (option) {
+        const select = option.closest('.vt-select');
+        select.classList.remove('open');
+        select.querySelector('.vt-select-trigger').setAttribute('aria-expanded', 'false');
+        const labelEl = select.querySelector('.vt-select-value');
+        if (labelEl) labelEl.textContent = option.dataset.label || option.dataset.value;
+        select.querySelectorAll('.vt-select-option').forEach(o => {
+          o.classList.toggle('selected', o === option);
+          o.setAttribute('aria-selected', o === option ? 'true' : 'false');
+        });
+        this._onSettingChange({ dataset: { key: select.dataset.key, type: 'select' }, value: option.dataset.value });
+        return;
+      }
+
+      if (!e.target.closest('.vt-select')) closeAllVtSelects();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeAllVtSelects();
     });
 
   }
@@ -525,8 +637,8 @@ class SettingsApp {
       case 'select':
         value = input.value;
         break;
-      case 'theme':
-        value = input.checked ? 'light' : 'dark';
+      case 'text':
+        value = input.value;
         break;
       case 'preset':
         value = input.value;
@@ -537,17 +649,25 @@ class SettingsApp {
 
     this.settings[key] = value;
 
-    // 主题变更 → 立即生效
+    // 主题变更 → 立即生效（主题控件值由 .theme-seg 点击事件直接处理，此处仅同步设置）
     if (key === 'theme') {
       this._applyTheme();
     }
 
-    // 灵敏度预设变更
     if (key === 'sensitivityPreset') {
       this._applyPresetOverrides(value);
       // 重渲染当前 section（数值输入需要更新禁用状态），跳过淡入动画
       this._renderSection(this._activeSection, true);
-      // 滑块视觉同步（重渲染后会重建 DOM，无需额外调用）
+    }
+
+    // 全屏覆盖模式无需提示方式：联动隐藏/显示「拦截提示方式」行
+    if (key === 'interceptionMode') {
+      this._applyAlertModeVisibility();
+    }
+
+    // 拦截方式/提示方式：实时刷新动画预览
+    if (key === 'interceptionMode' || key === 'alertMode') {
+      this._updateHintPreviews();
     }
 
     this._saveSettings();
@@ -564,19 +684,60 @@ class SettingsApp {
     this._presetOverrides = { ...presetDef.overrides };
   }
 
-  /** 同步滑块视觉状态 */
-  _syncPresetSlider(value) {
-    const thumb = document.querySelector('.preset-thumb');
-    const fill = document.querySelector('.preset-fill');
-    const labels = document.querySelectorAll('.preset-label');
-    if (!thumb || !fill) return;
-    const steps = ['low', 'medium', 'high'];
-    const idx = steps.indexOf(value);
-    const pct = idx / (steps.length - 1) * 100;
-    thumb.style.left = pct + '%';
-    thumb.dataset.value = value;
-    fill.style.width = pct + '%';
-    labels.forEach(l => l.classList.toggle('active', l.dataset.step === value));
+  /**
+   * 联动可见性：
+   * - 全屏覆盖模式：隐藏 alertMode 行与其预览，预览仅在「拦截方式」下方显示
+   * - 非全屏（横幅）模式：提示方式行可见，预览仅在「拦截提示方式」下方显示
+   */
+  _applyAlertModeVisibility() {
+    const fullscreen = this._getEffectiveValue('interceptionMode') === 'fullscreen';
+    const row = document.querySelector('.setting-row[data-key="alertMode"]');
+    const alertHint = document.querySelector('[data-hint-for="alertMode"]');
+    const interceptionHint = document.querySelector('[data-hint-for="interceptionMode"]');
+    if (row) row.classList.toggle('is-hidden', fullscreen);
+    if (alertHint) alertHint.classList.toggle('is-hidden', fullscreen);
+    if (interceptionHint) interceptionHint.classList.toggle('is-hidden', !fullscreen);
+    // 可见性变化后同步播放器（接续当前进度）
+    this._hintSyncPlayer();
+  }
+
+  /** 按当前设置计算并刷新动画预览（循环播放；切换时接续当前播放进度） */
+  _updateHintPreviews() {
+    const HINT_FILES = { popup: 'hint_1', notification: 'hint_2', none: 'hint_0' };
+    const interceptionMode = this._getEffectiveValue('interceptionMode');
+    const alertMode = this._getEffectiveValue('alertMode');
+
+    let interceptionSrc = '';
+    let alertSrc = '';
+    if (interceptionMode === 'fullscreen') {
+      interceptionSrc = 'hint-rsc/block_2.webp';
+    } else {
+      const hint = HINT_FILES[alertMode] || 'hint_0';
+      interceptionSrc = 'hint-rsc/block_1-' + hint + '.webp';
+      alertSrc = interceptionSrc;
+    }
+    this._hintSrcs = { interceptionMode: interceptionSrc, alertMode: alertSrc };
+    this._hintSyncPlayer();
+  }
+
+  /** 仅可见侧驱动播放；切换时沿用同一播放进度实现无缝接续 */
+  _hintSyncPlayer() {
+    if (!hintPreviewSupported()) {
+      // 降级：不支持 WebCodecs 时用 <img> 原生循环播放
+      for (const key of ['interceptionMode', 'alertMode']) {
+        const img = document.querySelector('[data-hint-for="' + key + '"] img.hint-anim');
+        const src = this._hintSrcs && this._hintSrcs[key];
+        if (img && src) img.src = src;
+      }
+      return;
+    }
+    const fullscreen = this._getEffectiveValue('interceptionMode') === 'fullscreen';
+    const key = fullscreen ? 'interceptionMode' : 'alertMode';
+    const src = (this._hintSrcs && this._hintSrcs[key]) || '';
+    const container = document.querySelector('[data-hint-for="' + key + '"]');
+    if (!src || !container) return;
+    const canvas = ensureHintCanvas(container);
+    hintPreviewSwitch(canvas, src);
   }
 
   // ==================== 模式切换 ====================
@@ -584,13 +745,11 @@ class SettingsApp {
   _setMode(mode) {
     if (this._mode === mode) return;
     this._mode = mode;
-    try { localStorage.setItem('vt_mode', mode); } catch(e) {}
-    // 切回基础模式时，若当前在高级专属分区则跳转到常规
+    try { localStorage.setItem(UI_KEYS.MODE, mode); } catch (e) { }
     if (mode === 'basic') {
-      const advancedOnly = ['thresholds', 'download', 'blacklist'];
-      if (advancedOnly.includes(this._activeSection)) {
+      if (ADVANCED_ONLY_SECTIONS.includes(this._activeSection)) {
         this._activeSection = 'general';
-        try { localStorage.setItem('vt_activeSection', 'general'); } catch(e) {}
+        try { localStorage.setItem(UI_KEYS.ACTIVE_SECTION, 'general'); } catch (e) { }
       }
     }
     this._applyModeToDom();
@@ -602,7 +761,6 @@ class SettingsApp {
 
   _applyModeToDom() {
     document.documentElement.dataset.mode = this._mode;
-    // 更新分段控件高亮
     document.querySelectorAll('.mode-segment').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.mode === this._mode);
     });
@@ -635,9 +793,8 @@ class SettingsApp {
   _switchSection(sectionId) {
     this._closeDrawer();
     this._activeSection = sectionId;
-    try { localStorage.setItem('vt_activeSection', sectionId); } catch(e) {}
+    try { localStorage.setItem(UI_KEYS.ACTIVE_SECTION, sectionId); } catch (e) { }
     this._renderSection(sectionId);
-    // 高亮侧栏
     document.querySelectorAll('.nav-item').forEach(el => {
       el.classList.toggle('active', el.dataset.section === sectionId);
     });
@@ -671,7 +828,6 @@ class SettingsApp {
         throw new Error('无效的设置文件：缺少 settings 字段');
       }
 
-      // 校验每个键
       const validated = {};
       let importedCount = 0;
       for (const [key, value] of Object.entries(data.settings)) {
@@ -686,7 +842,6 @@ class SettingsApp {
         throw new Error('文件中没有找到任何可识别的设置项');
       }
 
-      // 合并
       this.settings = { ...SETTINGS_DEFAULTS, ...validated };
       this._presetOverrides = {};
       this._saveSettings();
@@ -712,11 +867,30 @@ class SettingsApp {
     try {
       const all = await chrome.storage.local.get(null);
       const keysToRemove = Object.keys(all).filter(k =>
-        k.startsWith('domain_cache_')
+        k.startsWith(STORAGE_KEYS.DOMAIN_CACHE) || k.startsWith(STORAGE_KEYS.ICP_CACHE_PREFIX)
       );
+      let cleared = keysToRemove.length;
       if (keysToRemove.length > 0) {
         await chrome.storage.local.remove(keysToRemove);
-        this._showToast(`已清除 ${keysToRemove.length} 条缓存记录`, 'success');
+      }
+      // 标签页状态缓存位于 session 存储，一并清除（不占用 local 配额）；
+      // Firefox(<142) 无 session 时 tabState 存于 local，此时从 local 清除
+      if (chrome.storage && chrome.storage.session) {
+        const sessionAll = await chrome.storage.session.get(null);
+        const sessionKeys = Object.keys(sessionAll).filter(k => k.startsWith(STORAGE_KEYS.TAB_STATE_PREFIX));
+        if (sessionKeys.length > 0) {
+          await chrome.storage.session.remove(sessionKeys);
+          cleared += sessionKeys.length;
+        }
+      } else {
+        const localTabStateKeys = Object.keys(all).filter(k => k.startsWith(STORAGE_KEYS.TAB_STATE_PREFIX));
+        if (localTabStateKeys.length > 0) {
+          await chrome.storage.local.remove(localTabStateKeys);
+          cleared += localTabStateKeys.length;
+        }
+      }
+      if (cleared > 0) {
+        this._showToast(`已清除 ${cleared} 条缓存记录`, 'success');
       } else {
         this._showToast('没有需要清除的缓存', 'info');
       }
@@ -730,12 +904,16 @@ class SettingsApp {
       const all = await chrome.storage.local.get(null);
       // 保留 global_settings（将被重置）
       const keysToRemove = Object.keys(all).filter(k =>
-        !k.startsWith('global_settings')  // 保留设置键，仅重置
+        !k.startsWith(STORAGE_KEYS.GLOBAL_SETTINGS)  // 保留设置键，仅重置
       );
       if (keysToRemove.length > 0) {
         await chrome.storage.local.remove(keysToRemove);
       }
       await chrome.storage.local.remove(STORAGE_KEYS.GLOBAL_SETTINGS);
+      // 清空 session 存储（标签页状态等临时数据）
+      if (chrome.storage && chrome.storage.session) {
+        await chrome.storage.session.clear().catch(() => {});
+      }
       this.settings = { ...SETTINGS_DEFAULTS };
       this._presetOverrides = {};
       this._renderSection(this._activeSection);
@@ -749,7 +927,20 @@ class SettingsApp {
 
   _applyTheme() {
     const theme = this.settings.theme || SETTINGS_DEFAULTS.theme;
-    document.documentElement.dataset.theme = theme;
+    const resolved = theme === 'auto'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : theme;
+    document.documentElement.dataset.theme = resolved;
+  }
+
+  /** 系统配色变化时，若主题为 auto 则实时切换 */
+  _watchSystemTheme() {
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    mql.addEventListener('change', () => {
+      if (this.settings.theme === 'auto') {
+        this._applyTheme();
+      }
+    });
   }
 
   // ==================== 确认弹窗 ====================
@@ -790,11 +981,10 @@ class SettingsApp {
     toast.textContent = message;
     container.appendChild(toast);
 
-    // 3 秒后自动移除
     setTimeout(() => {
       toast.classList.add('removing');
       toast.addEventListener('animationend', () => toast.remove());
-    }, 3000);
+    }, TOAST_DURATION_MS);
   }
 
   // ==================== 白名单编辑 ====================
@@ -815,7 +1005,7 @@ class SettingsApp {
             提示：也可以通过弹窗中的星形按钮快速将当前网站加入白名单
           </div>
           <div class="list-editor-wrapper">
-            <textarea id="whitelist-editor" class="list-editor" placeholder="每行输入一个域名，例如：&#10;example.com&#10;trusted-site.org" spellcheck="false"></textarea>
+            <textarea id="whitelist-editor" class="list-editor" placeholder="每行一个条目，支持域名通配符，例如：&#10;example.com            （仅精确域名）&#10;*.example.com        （example.com 及其所有子域名）&#10;*                   （匹配所有域名，慎用）" spellcheck="false"></textarea>
             <div class="list-editor-count" id="whitelist-count"></div>
           </div>
           <div class="list-actions">
@@ -835,7 +1025,6 @@ class SettingsApp {
 
     await this._loadWhitelist();
 
-    // 绑定事件
     document.getElementById('wl-import-btn')?.addEventListener('click', () => {
       document.getElementById('wl-import-file')?.click();
     });
@@ -864,18 +1053,18 @@ class SettingsApp {
     if (el) el.innerHTML = `共 <strong>${count}</strong> 个域名`;
   }
 
-  /** 保存白名单：解析 textarea → 去重去空 → 批量写入 storage */
+  /** 保存白名单：解析 textarea → 规范化去重去空 → 批量写入 storage */
   async _saveWhitelist() {
     const editor = document.getElementById('whitelist-editor');
     if (!editor) return;
-    const lines = editor.value.split(/[\n\r]+/).map(s => s.trim()).filter(Boolean);
-    const domains = [...new Set(lines)]; // 去重
+    const lines = editor.value.split(/[\n\r]+/).map(s => normalizeWhitelistEntry(s)).filter(Boolean);
+    const domains = [...new Set(lines)];
     try {
       await chrome.storage.local.set({ [STORAGE_KEYS.WHITELIST]: domains });
       // 通知 Service Worker 刷新内存缓存
       try {
         await chrome.runtime.sendMessage({
-          type: 'BULK_UPDATE_WHITELIST',
+          type: MSG_TYPES.BULK_UPDATE_WHITELIST,
           payload: { domains }
         });
       } catch (e) { /* SW 可能不在运行 */ }
@@ -886,18 +1075,14 @@ class SettingsApp {
     }
   }
 
-  /** 从 .txt 文件导入白名单（合并去重） */
+  /** 从 .txt 文件导入白名单（合并去重，自动规范化域名/通配符） */
   async _importWhitelist(file) {
     try {
       const text = await file.text();
-      const newDomains = text.split(/[\n\r]+/).map(s => s.trim()).filter(Boolean).map(s => {
-        // 尝试提取纯域名（去掉协议和路径）
-        try { return new URL(s.startsWith('http') ? s : 'https://' + s).hostname; }
-        catch { return s.replace(/^https?:\/\//, '').split('/')[0]; }
-      });
+      const newDomains = text.split(/[\n\r]+/).map(s => normalizeWhitelistEntry(s)).filter(Boolean);
       const editor = document.getElementById('whitelist-editor');
       if (!editor) return;
-      const existing = editor.value.split(/[\n\r]+/).map(s => s.trim()).filter(Boolean);
+      const existing = editor.value.split(/[\n\r]+/).map(s => normalizeWhitelistEntry(s)).filter(Boolean);
       const merged = [...new Set([...existing, ...newDomains])];
       editor.value = merged.join('\n');
       this._updateWhitelistCount(merged.length);
@@ -922,11 +1107,133 @@ class SettingsApp {
     this._showToast('白名单已导出', 'success');
   }
 
-  // ==================== 下载黑名单管理 ====================
+  // ==================== 站点黑名单管理 ====================
 
   /**
-   * 渲染下载黑名单 Section：表格列表 + 展开详情 + 删除 + 清除全部
+   * 渲染站点黑名单 Section：textarea 编辑器，手动增删域名
    */
+  async _renderSiteBlacklistSection(container, section) {
+    container.innerHTML = `
+      <div class="section active">
+        <div class="section-header">
+          <div class="section-title">${section.label}</div>
+          <div class="section-desc">${section.description}</div>
+        </div>
+        <div class="settings-card">
+          <div class="whitelist-hint">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:4px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            提示：站点黑名单中的域名将被直接标记为高风险并触发警告。也可以通过弹窗底部的按钮快速添加当前网站。
+          </div>
+          <div class="list-editor-wrapper">
+            <textarea id="site-bl-editor" class="list-editor" placeholder="每行输入一个域名，例如：&#10;malicious-site.com&#10;phishing-page.org" spellcheck="false"></textarea>
+            <div class="list-editor-count" id="site-bl-count"></div>
+          </div>
+          <div class="list-actions">
+            <button id="site-bl-import-btn" class="btn" title="从 .txt 文件导入域名（合并追加）">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              导入 .txt
+            </button>
+            <button id="site-bl-export-btn" class="btn" title="导出域名列表到 .txt 文件">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              导出 .txt
+            </button>
+            <input type="file" id="site-bl-import-file" accept=".txt,.text" class="file-input-hidden">
+            <button id="site-bl-save-btn" class="btn btn-primary">保存更改</button>
+          </div>
+        </div>
+      </div>`;
+
+    await this._loadSiteBlacklist();
+
+    document.getElementById('site-bl-import-btn')?.addEventListener('click', () => {
+      document.getElementById('site-bl-import-file')?.click();
+    });
+    document.getElementById('site-bl-import-file')?.addEventListener('change', (e) => {
+      if (e.target.files[0]) { this._importSiteBlacklist(e.target.files[0]); e.target.value = ''; }
+    });
+    document.getElementById('site-bl-export-btn')?.addEventListener('click', () => this._exportSiteBlacklist());
+    document.getElementById('site-bl-save-btn')?.addEventListener('click', () => this._saveSiteBlacklist());
+  }
+
+  async _loadSiteBlacklist() {
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_SITE_BLACKLIST });
+      const blacklist = (resp && resp.data) ? resp.data : {};
+      const domains = Object.keys(blacklist).sort();
+      const editor = document.getElementById('site-bl-editor');
+      if (editor) editor.value = domains.join('\n');
+      this._updateSiteBlCount(domains.length);
+    } catch (e) {
+      console.error('[Settings] 加载站点黑名单失败:', e);
+    }
+  }
+
+  _updateSiteBlCount(count) {
+    const el = document.getElementById('site-bl-count');
+    if (el) el.innerHTML = `共 <strong>${count}</strong> 个域名`;
+  }
+
+  async _saveSiteBlacklist() {
+    const editor = document.getElementById('site-bl-editor');
+    if (!editor) return;
+    const lines = editor.value.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean);
+    const resp = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_SITE_BLACKLIST });
+    const current = (resp && resp.data) ? resp.data : {};
+    const currentDomains = new Set(Object.keys(current));
+    const newDomains = new Set(lines);
+
+    const toAdd = lines.filter(d => !currentDomains.has(d));
+    const toRemove = [...currentDomains].filter(d => !newDomains.has(d));
+
+    for (const domain of toAdd) {
+      await chrome.runtime.sendMessage({ type: MSG_TYPES.ADD_SITE_BLACKLIST, payload: { domain, addedBy: 'manual' } });
+    }
+    for (const domain of toRemove) {
+      await chrome.runtime.sendMessage({ type: MSG_TYPES.REMOVE_SITE_BLACKLIST, payload: { domain } });
+    }
+
+    if (toAdd.length > 0 || toRemove.length > 0) {
+      this._showToast(`已保存：新增 ${toAdd.length} 个，移除 ${toRemove.length} 个`, 'success');
+    } else {
+      this._showToast('未检测到更改', 'info');
+    }
+    await this._loadSiteBlacklist();
+  }
+
+  async _importSiteBlacklist(file) {
+    try {
+      const text = await file.text();
+      const imported = text.split(/[\n\r]+/).map(l => l.trim()).filter(Boolean);
+      const resp = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_SITE_BLACKLIST });
+      const current = (resp && resp.data) ? resp.data : {};
+      const currentSet = new Set(Object.keys(current));
+      let added = 0;
+      for (const domain of imported) {
+        if (!currentSet.has(domain)) {
+          await chrome.runtime.sendMessage({ type: MSG_TYPES.ADD_SITE_BLACKLIST, payload: { domain, addedBy: 'manual' } });
+          added++;
+        }
+      }
+      this._showToast(`已导入 ${added} 个新域名`, 'success');
+      await this._loadSiteBlacklist();
+    } catch (e) {
+      this._showToast('导入失败: ' + e.message, 'error');
+    }
+  }
+
+  _exportSiteBlacklist() {
+    const editor = document.getElementById('site-bl-editor');
+    if (!editor) return;
+    const blob = new Blob([editor.value || ''], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'virus-detector-site-blacklist.txt';
+    a.click(); URL.revokeObjectURL(url);
+    this._showToast('站点黑名单已导出', 'success');
+  }
+
+  // ==================== 下载黑名单管理 ====================
+
   async _renderBlacklistSection(container, section) {
     container.innerHTML = `
       <div class="section active">
@@ -943,14 +1250,13 @@ class SettingsApp {
           </div>
           <div class="list-actions" id="blacklist-actions" style="display:none;">
             <span class="list-editor-count" id="blacklist-count"></span>
-            <button id="bl-clear-all-btn" class="list-clear-all">清除全部黑名单</button>
+            <button id="bl-clear-all-btn" class="list-clear-all">清除全部下载黑名单</button>
           </div>
         </div>
       </div>`;
 
     await this._loadBlacklist();
 
-    // 绑定事件委托
     const card = container.querySelector('.settings-card');
     card?.addEventListener('click', (e) => {
       const delBtn = e.target.closest('.delete-btn');
@@ -968,11 +1274,10 @@ class SettingsApp {
     });
 
     document.getElementById('bl-clear-all-btn')?.addEventListener('click', () => {
-      this._showConfirm('确定要清除全部下载黑名单吗？<br>这将删除所有已记录的黑名单域名。<br>此操作不可撤销！', () => this._clearBlacklist());
+      this._showConfirm('确定要清除全部下载黑名单吗？<br>这将删除所有已记录的下载域名黑名单。<br>此操作不可撤销！', () => this._clearBlacklist());
     });
   }
 
-  /** 从 Service Worker 获取黑名单并渲染表格 */
   async _loadBlacklist() {
     const content = document.getElementById('blacklist-content');
     const actions = document.getElementById('blacklist-actions');
@@ -980,8 +1285,7 @@ class SettingsApp {
 
     try {
       const resp = await chrome.runtime.sendMessage({
-        type: MSG_TYPES.GET_DOWNLOAD_BLACKLIST,
-        payload: {}
+        type: MSG_TYPES.GET_DOWNLOAD_BLACKLIST, payload: {}
       });
       const blacklist = (resp && resp.data) ? resp.data : {};
 
@@ -989,7 +1293,7 @@ class SettingsApp {
         content.innerHTML = `
           <div class="list-empty">
             <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 11l2 2 4-4"/></svg>
-            <p>黑名单为空</p>
+            <p>下载黑名单为空</p>
             <p style="font-size:12px;color:var(--text3);margin-top:4px;">当您在下载确认弹窗中选择"拉黑下载域名"时，域名将被自动添加到此列表</p>
           </div>`;
         actions.style.display = 'none';
@@ -997,20 +1301,11 @@ class SettingsApp {
       }
 
       const entries = Object.entries(blacklist);
-      // 按 lastHit 降序排列
       entries.sort((a, b) => (b[1].lastHit || 0) - (a[1].lastHit || 0));
 
       let tableHTML = `
         <table class="blacklist-table">
-          <thead>
-            <tr>
-              <th>域名</th>
-              <th>命中次数</th>
-              <th>最近命中</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>`;
+          <thead><tr><th>域名</th><th>命中次数</th><th>最近命中</th><th>操作</th></tr></thead><tbody>`;
 
       for (const [domain, entry] of entries) {
         const hitCount = entry.hitCount || 0;
@@ -1032,15 +1327,11 @@ class SettingsApp {
                   <div class="detail-label">来源页面</div>
                   <ul class="detail-sources">
                     ${(entry.sourcePages || []).slice(0, 5).map(sp =>
-                      `<li><a href="${this._escapeHtml(sp.pageUrl || '#')}" target="_blank" rel="noopener">${this._escapeHtml(sp.pageDomain || sp.pageUrl || '未知')}</a></li>`
-                    ).join('')}
+          `<li><a href="${this._escapeHtml(sp.pageUrl || '#')}" target="_blank" rel="noopener">${this._escapeHtml(sp.pageDomain || sp.pageUrl || '未知')}</a></li>`
+        ).join('')}
                     ${(entry.sourcePages || []).length > 5 ? `<li style="color:var(--text3)">...还有 ${entry.sourcePages.length - 5} 个来源</li>` : ''}
                   </ul>
-                  ${entry.fileTypes && entry.fileTypes.length > 0 ? `
-                  <div class="detail-label" style="margin-top:8px;">文件类型</div>
-                  <div class="detail-filetypes">
-                    ${entry.fileTypes.map(ft => `<span class="detail-filetype-tag">${this._escapeHtml(ft)}</span>`).join('')}
-                  </div>` : ''}
+                  ${entry.fileTypes && entry.fileTypes.length > 0 ? `<div class="detail-label" style="margin-top:8px;">文件类型</div><div class="detail-filetypes">${entry.fileTypes.map(ft => `<span class="detail-filetype-tag">${this._escapeHtml(ft)}</span>`).join('')}</div>` : ''}
                 </div>
               </td>
             </tr>`;
@@ -1053,15 +1344,11 @@ class SettingsApp {
       actions.style.display = 'flex';
     } catch (e) {
       content.innerHTML = `
-        <div class="list-empty">
-          <p>加载黑名单失败</p>
-          <p style="font-size:12px;color:var(--text3);margin-top:4px;">${this._escapeHtml(e.message)}</p>
-        </div>`;
+        <div class="list-empty"><p>加载下载黑名单失败</p><p style="font-size:12px;color:var(--text3);margin-top:4px;">${this._escapeHtml(e.message)}</p></div>`;
       actions.style.display = 'none';
     }
   }
 
-  /** 展开/收起黑名单行详情 */
   _toggleBlacklistExpand(domain) {
     const escapedId = 'bl-expand-' + this._escapeHtmlAttr(domain);
     const row = document.getElementById(escapedId);
@@ -1070,40 +1357,27 @@ class SettingsApp {
     }
   }
 
-  /** 删除单个黑名单条目 */
   async _removeBlacklistEntry(domain) {
-    this._showConfirm(`确定要从黑名单中移除 <strong>${domain}</strong> 吗？`, async () => {
+    this._showConfirm(`确定要从下载黑名单中移除 <strong>${domain}</strong> 吗？`, async () => {
       try {
-        await chrome.runtime.sendMessage({
-          type: MSG_TYPES.REMOVE_DOWNLOAD_BLACKLIST,
-          payload: { domain }
-        });
+        await chrome.runtime.sendMessage({ type: MSG_TYPES.REMOVE_DOWNLOAD_BLACKLIST, payload: { domain } });
         this._showToast(`已移除 ${domain}`, 'success');
-        await this._loadBlacklist(); // 刷新表格
+        await this._loadBlacklist();
       } catch (e) {
         this._showToast('删除失败: ' + e.message, 'error');
       }
     });
   }
 
-  /** 清除全部黑名单 */
   async _clearBlacklist() {
     try {
-      // 获取所有条目并逐条删除
-      const resp = await chrome.runtime.sendMessage({
-        type: MSG_TYPES.GET_DOWNLOAD_BLACKLIST,
-        payload: {}
-      });
+      const resp = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_DOWNLOAD_BLACKLIST, payload: {} });
       const blacklist = (resp && resp.data) ? resp.data : {};
       const domains = Object.keys(blacklist);
-
       for (const domain of domains) {
-        await chrome.runtime.sendMessage({
-          type: MSG_TYPES.REMOVE_DOWNLOAD_BLACKLIST,
-          payload: { domain }
-        });
+        await chrome.runtime.sendMessage({ type: MSG_TYPES.REMOVE_DOWNLOAD_BLACKLIST, payload: { domain } });
       }
-      this._showToast(`已清除 ${domains.length} 条黑名单记录`, 'success');
+      this._showToast(`已清除 ${domains.length} 条下载黑名单记录`, 'success');
       await this._loadBlacklist();
     } catch (e) {
       this._showToast('清除失败: ' + e.message, 'error');
@@ -1143,10 +1417,35 @@ class SettingsApp {
 
   // ==================== 更新检测 ====================
 
+  /**
+   * 判定更新渠道（与 Service Worker 逻辑一致）：
+   * UPDATE_CHANNEL 常量优先；'auto' 时商店安装会被商店注入 manifest.update_url。
+   */
+  _getUpdateChannel() {
+    if (UPDATE_CHANNEL === 'store' || UPDATE_CHANNEL === 'manual') return UPDATE_CHANNEL;
+    return chrome.runtime.getManifest().update_url ? 'store' : 'manual';
+  }
+
   async _loadUpdateInfo() {
     const statusEl = document.getElementById('update-status');
     const downloadBtn = document.getElementById('download-update-btn');
+    const checkBtn = document.getElementById('check-update-btn');
     if (!statusEl) return;
+
+    // 商店渠道：由浏览器扩展商店自动更新，无需远程检查
+    if (this._getUpdateChannel() === 'store') {
+      statusEl.innerHTML = `
+        <div class="update-status up-to-date">
+          <div style="color:var(--green);font-weight:600;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="vertical-align:-3px;margin-right:4px;"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            商店版本
+          </div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px;">由浏览器扩展商店自动更新，无需手动检查</div>
+        </div>`;
+      if (checkBtn) checkBtn.style.display = 'none';
+      if (downloadBtn) downloadBtn.style.display = 'none';
+      return;
+    }
 
     try {
       const r = await chrome.storage.local.get(STORAGE_KEYS.UPDATE_INFO);
@@ -1156,7 +1455,14 @@ class SettingsApp {
         return;
       }
 
-      if (info.error) {
+      const timeAgo = this._formatRelativeTime(info.lastCheck);
+      // 本次检查失败但保留了上次成功结果时，展示上次结果并附加失败提示
+      const failedNote = info.error
+        ? `<div style="font-size:12px;color:var(--red);margin-top:6px;">⚠️ 本次检查失败（以下为上次成功结果）：${this._escapeHtml(info.error)}</div>`
+        : '';
+
+      if (info.error && !info.latestVersion) {
+        // 从未成功过，仅展示错误
         statusEl.innerHTML = `
           <div class="update-status error">
             <span style="color:var(--red);">⚠️ 检查失败</span>
@@ -1165,7 +1471,6 @@ class SettingsApp {
         return;
       }
 
-      const timeAgo = this._formatRelativeTime(info.lastCheck);
       if (info.hasUpdate) {
         statusEl.innerHTML = `
           <div class="update-status has-update">
@@ -1177,11 +1482,9 @@ class SettingsApp {
             <div class="about-row"><span class="about-label">最新版本</span><span class="about-value" style="color:var(--green);font-weight:700;">v${info.latestVersion}</span></div>
             ${info.publishedAt ? `<div class="about-row"><span class="about-label">发布日期</span><span class="about-value">${new Date(info.publishedAt).toLocaleDateString('zh-CN')}</span></div>` : ''}
             <div class="about-row"><span class="about-label">上次检查</span><span class="about-value">${timeAgo}</span></div>
+            ${failedNote}
           </div>`;
-        if (downloadBtn && info.releaseUrl) {
-          downloadBtn.href = info.releaseUrl;
-          downloadBtn.style.display = 'inline-flex';
-        }
+        if (info.releaseUrl) this._swapToDownloadBtn(info.releaseUrl);
       } else {
         statusEl.innerHTML = `
           <div class="update-status up-to-date">
@@ -1192,16 +1495,45 @@ class SettingsApp {
             <div class="about-row" style="margin-top:6px;"><span class="about-label">当前版本</span><span class="about-value">v${info.currentVersion}</span></div>
             <div class="about-row"><span class="about-label">最新版本</span><span class="about-value">v${info.latestVersion || info.currentVersion}</span></div>
             <div class="about-row"><span class="about-label">上次检查</span><span class="about-value">${timeAgo}</span></div>
+            ${failedNote}
           </div>`;
-        if (downloadBtn) downloadBtn.style.display = 'none';
+        this._restoreCheckBtn();
       }
     } catch (e) {
       statusEl.innerHTML = `<div class="update-status pending">无法加载更新信息</div>`;
     }
   }
 
+  /** 将检查更新按钮替换为绿色前往下载链接 */
+  _swapToDownloadBtn(url) {
+    const oldBtn = document.getElementById('check-update-btn');
+    if (!oldBtn) return;
+    const a = document.createElement('a');
+    a.id = 'download-update-btn';
+    a.className = 'btn btn-primary';
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>前往下载`;
+    oldBtn.replaceWith(a);
+  }
+
+  /** 恢复为检查更新按钮（如果已被替换） */
+  _restoreCheckBtn() {
+    const dlBtn = document.getElementById('download-update-btn');
+    if (!dlBtn) return;
+    const btn = document.createElement('button');
+    btn.id = 'check-update-btn';
+    btn.className = 'btn';
+    btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>检查更新`;
+    dlBtn.replaceWith(btn);
+  }
+
   async _onCheckUpdate() {
+    if (this._getUpdateChannel() === 'store') return; // 商店渠道由浏览器自动更新
     const statusEl = document.getElementById('update-status');
+    // 先恢复为检查按钮（可能之前已被替换为下载链接）
+    this._restoreCheckBtn();
     const btn = document.getElementById('check-update-btn');
     if (statusEl) statusEl.innerHTML = `<div class="update-status pending">
       <div class="spinner" style="width:16px;height:16px;border-width:2px;margin:0 8px 0 0;display:inline-block;vertical-align:middle;"></div>
@@ -1226,7 +1558,8 @@ class SettingsApp {
           <div style="font-size:12px;color:var(--text2);margin-top:4px;">${this._escapeHtml(e.message)}</div>
         </div>`;
     } finally {
-      if (btn) btn.disabled = false;
+      const checkBtn = document.getElementById('check-update-btn');
+      if (checkBtn) checkBtn.disabled = false;
     }
   }
 
@@ -1266,13 +1599,6 @@ class SettingsApp {
               </button>
            </div>
             <div id="update-status">加载中...</div>
-            <div class="list-actions" style="margin-top:8px;">
-              
-              <a id="download-update-btn" class="btn btn-primary" style="display:none;" href="#" target="_blank" rel="noopener">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                前往下载
-              </a>
-            </div>
           </div>
           <div class="about-card">
             <h3>
@@ -1282,15 +1608,15 @@ class SettingsApp {
               项目链接
             </h3>
             <div class="about-links">
-              <a class="about-link" href="https://github.com/Lolitide/VirusDetector" target="_blank" rel="noopener">
+              <a class="about-link" href="${GITHUB_REPO_PAGE}" target="_blank" rel="noopener">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="vertical-align:-2px;margin-right:3px;"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
                 GitHub 仓库
               </a>
-              <a class="about-link" href="https://github.com/Lolitide/VirusDetector/issues/new/choose" target="_blank" rel="noopener">
+              <a class="about-link" href="${GITHUB_NEW_ISSUE_URL}" target="_blank" rel="noopener">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                 反馈问题
               </a>
-              <a class="about-link" href="https://github.com/Lolitide/VirusDetector/releases" target="_blank" rel="noopener">
+              <a class="about-link" href="${GITHUB_RELEASES_PAGE}" target="_blank" rel="noopener">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;margin-right:3px;"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                 更新日志
               </a>
@@ -1310,14 +1636,12 @@ class SettingsApp {
 document.addEventListener('DOMContentLoaded', () => {
   const app = new SettingsApp();
   app.init().then(() => {
-    // 异步加载存储统计
     app._loadStorageStats();
   }).catch(err => {
     console.error('[Settings] 初始化失败:', err);
   });
 });
 
-// 扩展 SettingsApp 以支持存储统计
 SettingsApp.prototype._loadStorageStats = async function () {
   const statsEl = document.getElementById('storage-stats');
   if (!statsEl) return;
@@ -1329,11 +1653,23 @@ SettingsApp.prototype._loadStorageStats = async function () {
     const percent = ((bytesInUse / quota) * 100).toFixed(1);
 
     const cacheKeys = Object.keys(all).filter(k =>
-      k.startsWith('domain_cache_')
+      k.startsWith(STORAGE_KEYS.DOMAIN_CACHE)
     );
-    const tabStateKeys = Object.keys(all).filter(k => k.startsWith('tab_state_'));
+    const icpApiCacheKeys = Object.keys(all).filter(k =>
+      k.startsWith(STORAGE_KEYS.ICP_CACHE_PREFIX)
+    );
+    // 标签页状态已迁移至 chrome.storage.session（不占用 local 配额）；
+    // Firefox(<142) 无 session 时回退 local，此时从 local 统计
+    let tabStateKeys = [];
+    if (chrome.storage && chrome.storage.session) {
+      const sessionAll = await chrome.storage.session.get(null);
+      tabStateKeys = Object.keys(sessionAll).filter(k => k.startsWith(STORAGE_KEYS.TAB_STATE_PREFIX));
+    } else {
+      tabStateKeys = Object.keys(all).filter(k => k.startsWith(STORAGE_KEYS.TAB_STATE_PREFIX));
+    }
     const whitelist = all[STORAGE_KEYS.WHITELIST] || [];
     const blacklist = all[STORAGE_KEYS.DOWNLOAD_BLACKLIST] || [];
+    const siteBlacklist = all[STORAGE_KEYS.SITE_BLACKLIST] || [];
     const reports = all[STORAGE_KEYS.USER_REPORTS] || [];
 
     statsEl.innerHTML = `
@@ -1347,8 +1683,10 @@ SettingsApp.prototype._loadStorageStats = async function () {
         </div>
       </div>
       <div class="about-row"><span class="about-label">缓存记录</span><span class="about-value">${cacheKeys.length} 条</span></div>
-      <div class="about-row"><span class="about-label">标签页状态</span><span class="about-value">${tabStateKeys.length} 个</span></div>
+      <div class="about-row"><span class="about-label">ICP API 缓存</span><span class="about-value">${icpApiCacheKeys.length} 条</span></div>
+      <div class="about-row"><span class="about-label">标签页状态</span><span class="about-value">${tabStateKeys.length} 个${chrome.storage && chrome.storage.session ? '（session）' : ''}</span></div>
       <div class="about-row"><span class="about-label">白名单域名</span><span class="about-value">${Array.isArray(whitelist) ? whitelist.length : 0} 个</span></div>
+      <div class="about-row"><span class="about-label">站点黑名单</span><span class="about-value">${typeof siteBlacklist === 'object' ? Object.keys(siteBlacklist).length : 0} 条</span></div>
       <div class="about-row"><span class="about-label">下载黑名单</span><span class="about-value">${typeof blacklist === 'object' ? Object.keys(blacklist).length : 0} 条</span></div>
       <div class="about-row"><span class="about-label">上报记录</span><span class="about-value">${Array.isArray(reports) ? reports.length : 0} 条</span></div>
     `;
@@ -1356,3 +1694,121 @@ SettingsApp.prototype._loadStorageStats = async function () {
     statsEl.innerHTML = `<span style="color:var(--text3)">无法加载存储统计: ${e.message}</span>`;
   }
 };
+
+// ==================== 动画预览播放器（WebCodecs，切换时接续播放进度） ====================
+// 四种动画时长一致：用 ImageDecoder 解码动图绘制到 canvas，切换模式时沿用
+// 同一微秒级进度，实现从原位置无缝接续；不支持 WebCodecs 时降级为 <img> 循环播放。
+
+const _hintPreview = {
+  canvas: null, ctx: null, decoder: null, src: '',
+  frameCount: 1, frameDurUs: 100000, frameDurationsUs: null, totalUs: 100000,
+  currentUs: 0, lastTs: 0, frameIdx: -1, rafId: 0
+};
+
+function hintPreviewSupported() {
+  return typeof globalThis.ImageDecoder === 'function' &&
+    typeof requestAnimationFrame === 'function';
+}
+
+/** 将预览容器内的 <img> 替换为同等尺寸的 canvas（仅替换一次） */
+function ensureHintCanvas(container) {
+  let canvas = container.querySelector('canvas.hint-anim');
+  if (canvas) return canvas;
+  canvas = document.createElement('canvas');
+  canvas.className = 'hint-anim';
+  canvas.width = 640;
+  canvas.height = 360;
+  const img = container.querySelector('img.hint-anim');
+  if (img) img.replaceWith(canvas); else container.appendChild(canvas);
+  return canvas;
+}
+
+/** rAF 播放循环：按时间推进帧索引并解码绘制，超总时长后回绕（循环播放） */
+function hintPreviewFrame() {
+  const p = _hintPreview;
+  if (!p.decoder) return;
+  const now = performance.now();
+  p.currentUs += (now - p.lastTs) * 1000;
+  p.lastTs = now;
+  if (p.totalUs > 0) p.currentUs = p.currentUs % p.totalUs; // 循环回绕
+  let idx;
+  if (p.frameDurationsUs) {
+    // 逐帧时长来自文件解析（ANMF），与原生播放速度一致
+    let acc = 0;
+    idx = p.frameCount - 1;
+    for (let i = 0; i < p.frameDurationsUs.length; i++) {
+      acc += p.frameDurationsUs[i];
+      if (p.currentUs < acc) { idx = i; break; }
+    }
+  } else {
+    idx = Math.min(p.frameCount - 1, Math.floor(p.currentUs / p.frameDurUs));
+  }
+  if (idx !== p.frameIdx) {
+    p.frameIdx = idx;
+    p.decoder.decode({ frameIndex: idx }).then(({ image }) => {
+      if (p.decoder && p.ctx) p.ctx.drawImage(image, 0, 0);
+      image.close();
+    }).catch(() => { /* 单帧解码失败，跳过 */ });
+  }
+  p.rafId = requestAnimationFrame(hintPreviewFrame);
+}
+
+/** 解析 WebP 动图每帧时长（ANMF 块，微秒）；失败返回 null */
+function parseWebpFrameDurationsUs(buffer) {
+  const b = new Uint8Array(buffer);
+  if (b[0] !== 0x52 || b[1] !== 0x49 || b[2] !== 0x46 || b[3] !== 0x46) return null; // RIFF
+  const durations = [];
+  let off = 12;
+  while (off + 8 <= b.length) {
+    const size = b[off + 4] | (b[off + 5] << 8) | (b[off + 6] << 16) | (b[off + 7] << 24);
+    const tag = String.fromCharCode(b[off], b[off + 1], b[off + 2], b[off + 3]);
+    if (tag === 'ANMF') {
+      // 帧头 16 字节：x(3)/y(3)/w(3)/h(3)/duration(3,毫秒)/flags(1)
+      const durMs = b[off + 8 + 12] | (b[off + 8 + 13] << 8) | (b[off + 8 + 14] << 16);
+      durations.push(durMs * 1000);
+    }
+    off += 8 + size + (size & 1);
+  }
+  return durations.length ? durations : null;
+}
+
+/** 切换到新动画源并接续当前播放进度（四种动画时长一致，进度可直接沿用） */
+async function hintPreviewSwitch(canvas, src) {
+  const p = _hintPreview;
+  if (p.src === src && p.canvas === canvas) return;
+  cancelAnimationFrame(p.rafId);
+  if (p.decoder) {
+    try { p.decoder.close(); } catch (e) { /* ignore */ }
+    p.decoder = null;
+  }
+  p.canvas = canvas;
+  p.ctx = canvas.getContext('2d');
+  p.src = src;
+  p.frameIdx = -1;
+  try {
+    const resp = await fetch(src);
+    if (!resp.ok) return;
+    const buf = await resp.arrayBuffer();
+    const decoder = new globalThis.ImageDecoder({ data: buf, type: 'image/webp' });
+    await decoder.tracks.ready;
+    const track = decoder.tracks.selectedTrack;
+    if (!track) { decoder.close(); return; }
+    p.decoder = decoder;
+    // 帧时长以文件 ANMF 块为准（实测 33ms/帧；ImageDecoder 的
+    // frameDuration 在部分版本下缺失/为 0，曾导致 100ms/帧回退 → 播放 3 倍慢）
+    const parsedDurations = parseWebpFrameDurationsUs(buf);
+    p.frameDurationsUs = parsedDurations;
+    if (parsedDurations) {
+      p.frameCount = parsedDurations.length;
+      p.totalUs = parsedDurations.reduce((a, c) => a + c, 0);
+    } else {
+      p.frameCount = track.frameCount || 1;
+      p.frameDurUs = track.frameDuration || 33333; // 与实测平均帧长一致的兜底
+      p.totalUs = track.duration || p.frameCount * p.frameDurUs;
+      p.frameDurationsUs = null;
+    }
+    p.currentUs = p.currentUs % p.totalUs; // 沿用旧进度（时长一致 → 无缝接续）
+    p.lastTs = performance.now();
+    p.rafId = requestAnimationFrame(hintPreviewFrame);
+  } catch (e) { /* 动画加载失败：保持画布空白 */ }
+}

@@ -1,85 +1,19 @@
 /**
- * Virus Detector — 可信平台白名单 (Trusted Platforms Whitelist)
+ * Virus Detector — 可信平台白名单工具类 (Trusted Platforms Whitelist)
  *
- * 用于避免将合法 Wiki、代码托管、博客、文档等 UGC 平台的子页面
- * 误判为仿冒官网。匹配逻辑：提取 URL 的注册域（eTLD+1），
- * 与白名单进行 O(1) 查找比对。
+ * 针对 Wiki / 代码托管 / 博客 / 文档 / 建站等 UGC 平台，提供 eTLD+1
+ * 粒度的 O(1) 白名单查找，避免其子页面被误判为仿冒官网。
+ * 仅跳过仿冒官网检测（规则一），其他安全规则仍正常运行。
+ * 名单本体统一维护于 utils/exemptions/index.js（导出 TRUSTED_PLATFORMS），
+ * 本文件只提供 TrustedPlatforms 工具类，不再单独维护域名列表。
  *
  * @module trusted-platforms
- *
- * 设计原则：
- *   - 白名单为可配置、可扩展的 Set，新增/移除平台只需修改数组
- *   - 匹配粒度是 eTLD+1（注册域），匹配后该域下所有子页面均受信任
- *   - 仅跳过仿冒官网检测（规则一），其他安全规则仍正常运行
- *
- * 覆盖类别：
- *   - Wiki 农场：Fandom, Wikia, Miraheze, wiki.gg 等
- *   - 代码托管 Pages：GitHub Pages, GitLab Pages, Codeberg Pages 等
- *   - PaaS 部署：Netlify, Vercel, Heroku, Cloudflare Pages 等
- *   - 博客平台：Medium, WordPress.com, Blogger, Substack 等
- *   - 文档/知识库：Read the Docs, Notion, GitBook 等
- *   - 建站/个人页：Wix, Weebly, Carrd, About.me 等
  */
 
 // ==================== 可信平台域名集合 ====================
-
-const TRUSTED_PLATFORMS = new Set([
-  // ---- Wiki 平台 ----
-  'fandom.com',
-  'wikia.com',
-  'wikimedia.org',
-  'miraheze.org',
-  'wiki.gg',
-  'gamepedia.com',
-
-  // ---- 代码托管 Pages ----
-  'github.io',
-  'gitlab.io',
-  'bitbucket.io',
-  'sourceforge.io',
-  'codeberg.page',
-
-  // ---- PaaS / 静态站点托管 ----
-  'netlify.app',
-  'vercel.app',
-  'herokuapp.com',
-  'pages.dev',          // Cloudflare Pages
-  'surge.sh',
-  'glitch.me',
-  'onrender.com',
-  'fly.dev',
-  'workers.dev',        // Cloudflare Workers
-  'deno.dev',
-
-  // ---- 博客与内容平台 ----
-  'medium.com',
-  'wordpress.com',
-  'blogger.com',
-  'blogspot.com',
-  'tumblr.com',
-  'hatenablog.com',
-  'fc2.com',
-  'livejournal.com',
-  'typepad.com',
-  'substack.com',
-  'ghost.io',
-  'hashnode.dev',
-  'dev.to',
-
-  // ---- 文档与知识库 ----
-  'readthedocs.io',
-  'notion.site',
-  'gitbook.io',
-
-  // ---- 建站 / 个人页 ----
-  'weebly.com',
-  'wixsite.com',
-  'jimdo.com',
-  'strikingly.com',
-  'carrd.co',
-  'about.me',
-  'linktr.ee',
-]);
+// Wiki / 代码托管 / 博客 / 文档 / 建站等 UGC 平台，规则一(仿冒官网)跳过。
+// 名单已统一迁移至 utils/exemptions/index.js（导出 TRUSTED_PLATFORMS），便于集中维护。
+import { TRUSTED_PLATFORMS } from './exemptions/index.js';
 
 // ==================== TrustedPlatforms 工具类 ====================
 

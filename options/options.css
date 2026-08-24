@@ -481,65 +481,39 @@ html, body {
   cursor: not-allowed;
 }
 
-/* ===== Theme Toggle (special sun/moon style) ===== */
-.theme-setting-row {
-  background: var(--bg);
+/* ===== Theme Segmented Control (dark / light / auto) ===== */
+.theme-segmented {
+  display: flex;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  margin: 4px 0 !important;
-  padding-left: 20px;
-  padding-right: 20px;
+  overflow: hidden;
 }
 
-.theme-toggle .toggle-slider {
-  background: #3a3a6c;
+.theme-seg {
+  padding: 7px 12px;
+  background: var(--bg);
+  border: none;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
 }
 
-.theme-toggle input:checked + .toggle-slider {
-  background: #e8a840;
+.theme-seg:not(:last-child) {
+  border-right: 1px solid var(--border);
 }
 
-/* dark-mode knob */
-.theme-toggle .toggle-slider::before {
-  background: #1a1a2e;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+.theme-seg:hover {
+  background: var(--bg3);
+  color: var(--text);
 }
 
-/* light-mode knob */
-.theme-toggle input:checked + .toggle-slider::before {
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
-}
-
-/* ===== Theme Toggle Icons (sun / moon crossfade) ===== */
-.theme-icon {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 11px;
-  line-height: 1;
-  pointer-events: none;
-  transition: opacity 0.10s ease;
-}
-
-/* sun on left side of track */
-.theme-icon-sun {
-  left: 6px;
-  opacity: 0;
-}
-
-/* moon on right side of track */
-.theme-icon-moon {
-  right: 6px;
-  opacity: 1;
-}
-
-/* when checked (light mode): sun fades in, moon fades out */
-.theme-toggle input:checked ~ .theme-icon-sun {
-  opacity: 1;
-}
-
-.theme-toggle input:checked ~ .theme-icon-moon {
-  opacity: 0;
+.theme-seg.active {
+  background: var(--bg3);
+  color: var(--green);
 }
 
 /* ===== Preset Sensitivity Slider ===== */
@@ -662,6 +636,31 @@ html, body {
 
 .number-input.step-wide {
   width: 110px;
+}
+
+/* ===== Text input (apihz credentials etc.) ===== */
+.text-input {
+  width: 220px;
+  max-width: 100%;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  transition: border-color var(--transition);
+}
+
+.text-input:focus {
+  border-color: var(--blue);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.15);
+}
+
+.text-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ===== Select ===== */
@@ -1184,6 +1183,33 @@ select:focus {
   display: none;
 }
 
+/* ===== List Mode Tabs (站点黑名单 / 下载黑名单) ===== */
+.list-mode-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  border-bottom: 2px solid var(--border);
+}
+.list-mode-tab {
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+  transition: color .2s, border-color .2s;
+}
+.list-mode-tab:hover {
+  color: var(--text1);
+}
+.list-mode-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
 /* ===== Blacklist Table ===== */
 .blacklist-table {
   width: 100%;
@@ -1384,4 +1410,174 @@ select:focus {
   background: var(--bg);
   border-radius: var(--radius-sm);
   border-left: 3px solid var(--blue);
+}
+
+/* ===== 自定义下拉（vt-select） ===== */
+.vt-select {
+  position: relative;
+  width: 220px;
+  max-width: 100%;
+}
+
+.vt-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.vt-select-trigger:hover {
+  border-color: var(--text3);
+}
+
+.vt-select.open .vt-select-trigger,
+.vt-select-trigger:focus-visible {
+  border-color: var(--blue);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.15);
+}
+
+.vt-select-arrow {
+  flex-shrink: 0;
+  color: var(--text2);
+  transition: transform 0.2s ease;
+}
+
+.vt-select.open .vt-select-arrow {
+  transform: rotate(180deg);
+}
+
+.vt-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transform-origin: top center;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.vt-select.open .vt-select-menu {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.vt-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.vt-select-option:hover {
+  background: var(--bg3);
+}
+
+.vt-select-option.selected {
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.vt-select-check {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.vt-select-option.selected .vt-select-check {
+  opacity: 1;
+}
+
+/* ===== 联动隐藏：全屏覆盖模式下「拦截提示方式」行收起 ===== */
+.setting-row[data-key="alertMode"] {
+  max-height: 120px;
+  overflow: hidden;
+  transition: max-height 0.28s ease, opacity 0.22s ease, transform 0.22s ease,
+    padding 0.28s ease, border-color 0.28s ease;
+}
+
+/* 展开下拉时解除本行裁剪（overflow:hidden 会截断下拉面板，表现为被下一项遮住） */
+.setting-row[data-key="alertMode"]:has(.vt-select.open) {
+  overflow: visible;
+}
+
+.setting-row[data-key="alertMode"].is-hidden {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-color: transparent;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-select-menu,
+  .vt-select-arrow,
+  .setting-row[data-key="alertMode"] {
+    transition-duration: 0.01ms;
+  }
+}
+
+/* ===== 设置动画预览（拦截方式 / 拦截提示方式） ===== */
+.setting-hint {
+  margin: 0 20px 12px;
+  max-width: 460px;
+  max-height: 300px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+  transition: max-height 0.28s ease, opacity 0.22s ease, margin 0.28s ease,
+    border-color 0.28s ease;
+}
+
+.setting-hint .hint-anim {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.setting-hint.is-hidden {
+  max-height: 0;
+  margin: 0 20px 0;
+  opacity: 0;
+  border-color: transparent;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setting-hint {
+    transition-duration: 0.01ms;
+  }
 }

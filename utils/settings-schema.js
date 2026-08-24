@@ -2,15 +2,57 @@
  * Virus Detector — 设置 Schema（中央配置权威）
  *
  * 提供所有设置的默认值、校验规则、分区定义和灵敏度预设。
- * settings-schema.js 是唯一的事实来源（Single Source of Truth），
  * options.js 和 service-worker.js 均依赖此文件。
+ *
+ * 数值默认值从 utils/constants.js 单向派生（constants.js 为唯一真源），
+ * 避免同一阈值在两处各自维护导致漂移；SENSITIVITY_PRESETS 的覆盖值
+ * 属于预设专属调优，保持独立字面量。
+ *
+ * 导出：SETTINGS_DEFAULTS（默认值）、SECTIONS（分区/分组/设置项元数据）、
+ * SENSITIVITY_PRESETS（灵敏度预设）、validateSetting（单值校验并钳制）、
+ * SCHEMA_VERSION + migrateSettings（设置版本迁移）。
+ *
+ * migrateSettings 幂等迁移 v1 → v2 → v3（_schemaVersion ≥ SCHEMA_VERSION
+ * 时原样返回）：v2 修正 apihz 凭据键名拼写；v3 将桌面通知/警告弹窗两个
+ * 开关合并为「拦截提示方式」单选 alertMode 并删除旧键；调用方读设置后
+ * 调用，返回值不同则写回。
  *
  * @module settings-schema
  */
 
+import {
+  SCORE_THRESHOLD, DOWNLOAD_CONFIRM_THRESHOLD,
+  SCORE_RULE_1, SCORE_RULE_2_HIGH, SCORE_RULE_2_LOW,
+  RULE_2_DOMAIN_SUSPICION_THRESHOLD,
+  SCORE_RULE_2_PROACTIVE_MAX, SCORE_RULE_2_PER_HIGH_RISK, SCORE_RULE_2_PER_LOW_RISK,
+  SCORE_RULE_2_TRUSTED_PLATFORM, SCORE_RULE_2_HIJACK,
+  SCORE_RULE_2_BATCH_THRESHOLD, SCORE_RULE_2_BATCH_MULTIPLIER, SCORE_RULE_2_SUSPICION_MULTIPLIER,
+  SCORE_RULE_3, SCORE_RULE_3_FAKE,
+  SCORE_RULE_4A_SAME_PAGE, SCORE_RULE_4A_DEAD_LINK, SCORE_RULE_4A_DUPLICATE_LINK,
+  SCORE_RULE_4A_DOWNLOAD_LINK_BONUS,
+  SCORE_RULE_4B_DOWNLOAD_BTN, SCORE_RULE_4B_FILE_LINK, SCORE_RULE_4B_ARCHIVE_LINK,
+  SCORE_RULE_5, SCORE_RULE_5_PARTIAL,
+  SCORE_DOMAIN_AGE_MAX, DOMAIN_AGE_DECAY_A, DOMAIN_AGE_DECAY_B,
+  SCORE_DOMAIN_AGE_BONUS_MAX, DOMAIN_AGE_BONUS_SCORE_THRESHOLD,
+  DOMAIN_AGE_BONUS_MIN_DAYS, DOMAIN_AGE_BONUS_MAX_DAYS,
+  DETECT_NON_ARCHIVE_FILES_DEFAULT,
+  SCORE_DOWNLOAD_CROSS_DOMAIN, SCORE_DOWNLOAD_NEW_DOMAIN, SCORE_DOWNLOAD_BLACKLIST,
+  DOWNLOAD_VALID_DAYS_THRESHOLD, DOWNLOAD_CREATION_DAYS_THRESHOLD,
+  DOWNLOAD_BLACKLIST_MAX_ENTRIES, DOWNLOAD_BLACKLIST_CLEANUP_DAYS,
+  SAME_PAGE_LINK_THRESHOLD, DUPLICATE_LINK_THRESHOLD, DEAD_LINK_THRESHOLD,
+  AI_PAGE_THRESHOLDS,
+  EMOJI_KEYWORD_MATCH_THRESHOLD, EMOJI_MIN_TEXT_LENGTH, EMOJI_DENSITY_MAX_SCORE,
+  EMOJI_DENSITY_THRESHOLD_LOW, EMOJI_DENSITY_THRESHOLD_HIGH,
+  DOWNLOAD_DENSITY_THRESHOLD,
+  CACHE_TTL, HOUR_MS,
+  WHOIS_API_TIMEOUT, MIN_WHOIS_INTERVAL_MS, WARNING_COOLDOWN_MS,
+  THEME_VALUES, PRESET_LEVELS
+} from './constants.js';
+
 // ==================== Schema 版本 ====================
-/** 用于检测旧版本数据并触发迁移 */
-export const SCHEMA_VERSION = 1;
+// 版本迁移见文件尾 migrateSettings()
+/** 用于检测旧版本数据并触发迁移（v3：通知/弹窗开关合并为 alertMode） */
+export const SCHEMA_VERSION = 3;
 
 // ==================== 灵敏度预设 ====================
 /**
@@ -48,7 +90,7 @@ export const SENSITIVITY_PRESETS = {
   medium: {
     label: '中灵敏度（默认）',
     description: '平衡检测率与误报率，适合大多数用户。',
-    overrides: {}  // 空对象表示使用 SETTINGS_DEFAULTS 中的值
+    overrides: {}
   },
   high: {
     label: '高灵敏度',
@@ -86,11 +128,11 @@ export const SENSITIVITY_PRESETS = {
 // ==================== 设置默认值 ====================
 export const SETTINGS_DEFAULTS = {
   // === 常规设置 (basic) ===
-  sensitivityPreset: 'medium',
-  theme: 'dark',
-  desktopNotifications: true,
-  showWarningWindow: true,
+  sensitivityPreset: PRESET_LEVELS[1],
+  theme: THEME_VALUES[0],
   showDetectionDetails: true,
+  interceptionMode: 'banner',   // banner=下载注入+顶部横幅 | fullscreen=全屏覆盖全面拦截
+  alertMode: 'popup',           // popup=警告弹窗 | notification=桌面通知 | none=都不提示
 
   // === 检测规则开关 (basic) ===
   rule1Enabled: true,
@@ -100,79 +142,87 @@ export const SETTINGS_DEFAULTS = {
   rule5Enabled: true,
   downloadInjection: true,
 
-  // === 评分阈值 (advanced) ===
-  scoreThreshold: 100,
-  downloadConfirmThreshold: 80,
-  rule1_score: 60,
-  rule2_highScore: 40,
-  rule2_lowScore: 10,
-  rule2_domainSuspicionThreshold: 30,
-  rule2_proactiveMax: 30,
-  rule2_perHighRisk: 10,
-  rule2_perLowRisk: 5,
-  rule2_trustedPlatformScore: 3,
-  rule2_hijackScore: 30,
-  rule2_batchThreshold: 3,
-  rule2_batchMultiplier: 2.0,
-  rule2_suspicionMultiplier: 1.5,
-  rule3_score: 50,
-  rule3_fakeScore: 30,
-  rule4a_samePageScore: 20,
-  rule4a_deadLinkScore: 20,
-  rule4a_duplicateLinkScore: 20,
-  rule4a_downloadBonus: 10,
-  rule4b_downloadBtnScore: 10,
-  rule4b_fileLinkScore: 10,
-  rule4b_archiveLinkScore: 10,
-  rule5_fullScore: 30,
-  rule5_partialScore: 20,
-  domainAge_scoreMax: 60,
-  domainAge_decayA: 2.2,
-  domainAge_decayB: 1.9,
-  domainAgeBonus_max: 20,
-  domainAgeBonus_scoreThreshold: 20,
-  domainAgeBonus_minDays: 365,
-  domainAgeBonus_maxDays: 730,
+  // === 评分阈值 (advanced) —— 数值来自 utils/constants.js（唯一真源） ===
+  scoreThreshold: SCORE_THRESHOLD,
+  downloadConfirmThreshold: DOWNLOAD_CONFIRM_THRESHOLD,
+  rule1_score: SCORE_RULE_1,
+  rule2_highScore: SCORE_RULE_2_HIGH,
+  rule2_lowScore: SCORE_RULE_2_LOW,
+  rule2_domainSuspicionThreshold: RULE_2_DOMAIN_SUSPICION_THRESHOLD,
+  rule2_proactiveMax: SCORE_RULE_2_PROACTIVE_MAX,
+  rule2_perHighRisk: SCORE_RULE_2_PER_HIGH_RISK,
+  rule2_perLowRisk: SCORE_RULE_2_PER_LOW_RISK,
+  rule2_trustedPlatformScore: SCORE_RULE_2_TRUSTED_PLATFORM,
+  rule2_hijackScore: SCORE_RULE_2_HIJACK,
+  rule2_batchThreshold: SCORE_RULE_2_BATCH_THRESHOLD,
+  rule2_batchMultiplier: SCORE_RULE_2_BATCH_MULTIPLIER,
+  rule2_suspicionMultiplier: SCORE_RULE_2_SUSPICION_MULTIPLIER,
+  rule3_score: SCORE_RULE_3,
+  rule3_fakeScore: SCORE_RULE_3_FAKE,
+  rule4a_samePageScore: SCORE_RULE_4A_SAME_PAGE,
+  rule4a_deadLinkScore: SCORE_RULE_4A_DEAD_LINK,
+  rule4a_duplicateLinkScore: SCORE_RULE_4A_DUPLICATE_LINK,
+  rule4a_downloadBonus: SCORE_RULE_4A_DOWNLOAD_LINK_BONUS,
+  rule4b_downloadBtnScore: SCORE_RULE_4B_DOWNLOAD_BTN,
+  rule4b_fileLinkScore: SCORE_RULE_4B_FILE_LINK,
+  rule4b_archiveLinkScore: SCORE_RULE_4B_ARCHIVE_LINK,
+  rule5_fullScore: SCORE_RULE_5,
+  rule5_partialScore: SCORE_RULE_5_PARTIAL,
+  domainAge_scoreMax: SCORE_DOMAIN_AGE_MAX,
+  domainAge_decayA: DOMAIN_AGE_DECAY_A,
+  domainAge_decayB: DOMAIN_AGE_DECAY_B,
+  domainAgeBonus_max: SCORE_DOMAIN_AGE_BONUS_MAX,
+  domainAgeBonus_scoreThreshold: DOMAIN_AGE_BONUS_SCORE_THRESHOLD,
+  domainAgeBonus_minDays: DOMAIN_AGE_BONUS_MIN_DAYS,
+  domainAgeBonus_maxDays: DOMAIN_AGE_BONUS_MAX_DAYS,
 
   // === 下载检测 (advanced) ===
-  detectNonArchiveFiles: false,
+  detectNonArchiveFiles: DETECT_NON_ARCHIVE_FILES_DEFAULT,
   hijackDetection: true,
-  download_crossDomainScore: 10,
-  download_newDomainScore: 10,
-  download_blacklistScore: 20,
-  download_validDaysThreshold: 365,
-  download_creationDaysThreshold: 90,
-  download_blacklistMaxEntries: 500,
-  download_blacklistCleanupDays: 90,
+  download_crossDomainScore: SCORE_DOWNLOAD_CROSS_DOMAIN,
+  download_newDomainScore: SCORE_DOWNLOAD_NEW_DOMAIN,
+  download_blacklistScore: SCORE_DOWNLOAD_BLACKLIST,
+  download_validDaysThreshold: DOWNLOAD_VALID_DAYS_THRESHOLD,
+  download_creationDaysThreshold: DOWNLOAD_CREATION_DAYS_THRESHOLD,
+  download_blacklistMaxEntries: DOWNLOAD_BLACKLIST_MAX_ENTRIES,
+  download_blacklistCleanupDays: DOWNLOAD_BLACKLIST_CLEANUP_DAYS,
 
   // === 链接分析 (advanced) ===
-  link_samePageThreshold: 8,
-  link_duplicateThreshold: 4,
-  link_deadLinkThreshold: 3,
+  link_samePageThreshold: SAME_PAGE_LINK_THRESHOLD,
+  link_duplicateThreshold: DUPLICATE_LINK_THRESHOLD,
+  link_deadLinkThreshold: DEAD_LINK_THRESHOLD,
   checkDeadLinks: true,
 
   // === 代码工程化 (advanced) ===
-  code_minDomNodes: 100,
-  code_minExternalResources: 5,
-  code_minTextLength: 500,
+  code_minDomNodes: AI_PAGE_THRESHOLDS.MIN_DOM_NODES,
+  code_minExternalResources: AI_PAGE_THRESHOLDS.MIN_EXTERNAL_RESOURCES,
+  code_minTextLength: AI_PAGE_THRESHOLDS.MIN_TEXT_LENGTH,
   emojiDensityCheck: true,
-  emoji_keywordMatchThreshold: 1,
-  emoji_minTextLength: 100,
-  emoji_densityMaxScore: 30,
-  emoji_densityThresholdLow: 2.0,
-  emoji_densityThresholdHigh: 10.0,
-  code_signalsFull: 3,
+  emoji_keywordMatchThreshold: EMOJI_KEYWORD_MATCH_THRESHOLD,
+  emoji_minTextLength: EMOJI_MIN_TEXT_LENGTH,
+  emoji_densityMaxScore: EMOJI_DENSITY_MAX_SCORE,
+  emoji_densityThresholdLow: EMOJI_DENSITY_THRESHOLD_LOW,
+  emoji_densityThresholdHigh: EMOJI_DENSITY_THRESHOLD_HIGH,
+  downloadDensityThreshold: DOWNLOAD_DENSITY_THRESHOLD,
+  code_signalsFull: 3,   // 信号数阈值：由规则五强弱信号模型定义，constants.js 无对应常量
   code_signalsPartial: 2,
 
   // === 缓存与性能 (advanced) ===
-  cache_ttlHours: 24,
-  api_timeoutMs: 8000,
-  whois_apiIntervalMs: 2100,
-  warning_cooldownMs: 5000,
+  cache_ttlHours: CACHE_TTL / HOUR_MS,
+  api_timeoutMs: WHOIS_API_TIMEOUT,
+  whois_apiIntervalMs: MIN_WHOIS_INTERVAL_MS,
+  warning_cooldownMs: WARNING_COOLDOWN_MS,
 
   // === 隐私与数据 (basic) ===
   allowAnonymousReporting: true,
-  autoWhitelistFalsePositive: true
+  autoWhitelistFalsePositive: true,
+
+  // === ICP 备案 API 核验（配置页可控） ===
+  icpApiEnabled: true,          // 总开关：关闭则回退页面文本扫描
+  icpApiProviderUapis: true,    // uapis.cn 数据源开关
+  icpApiProviderApihz: true,    // apihz.cn 数据源开关
+  icpApiApihzId: '',            // 用户自有 apihz id（留空用内置公开凭据）
+  icpApiApihzKey: ''            // 用户自有 apihz key
 };
 
 // ==================== Section 定义（驱动 UI 渲染） ====================
@@ -225,18 +275,27 @@ export const SECTIONS = [
         mode: 'basic',
         settings: [
           {
-            key: 'theme', type: 'theme', label: '浅色模式',
-            desc: '切换浅色/深色界面主题（设置页和弹窗均生效）',
+            key: 'theme', type: 'theme', label: '界面主题',
+            desc: '切换深色/浅色界面主题，或跟随系统配色（设置页和弹窗均生效）',
             mode: 'basic'
           },
           {
-            key: 'desktopNotifications', type: 'boolean', label: '桌面通知',
-            desc: '检测到危险网站时弹出系统通知',
+            key: 'interceptionMode', type: 'select', label: '拦截方式',
+            desc: '检测到危险网站时的拦截方式：默认注入下载拦截并显示顶部横幅，或全屏覆盖拦截页整体替换原网页',
+            options: [
+              { value: 'banner', label: '下载注入 + 顶部横幅（默认）' },
+              { value: 'fullscreen', label: '全屏覆盖全面拦截' }
+            ],
             mode: 'basic'
           },
           {
-            key: 'showWarningWindow', type: 'boolean', label: '警告弹窗',
-            desc: '检测到危险网站时弹出全屏警告窗口',
+            key: 'alertMode', type: 'select', label: '拦截提示方式',
+            desc: '触发拦截时的提醒方式：弹出警告窗口或发送桌面通知（全屏覆盖模式下拦截页本身即提示）',
+            options: [
+              { value: 'popup', label: '警告弹窗（默认）' },
+              { value: 'notification', label: '桌面通知' },
+              { value: 'none', label: '都不提示' }
+            ],
             mode: 'basic'
           },
           {
@@ -311,7 +370,59 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 5. 链接分析 ==========
+  // ========== 3. 备案查询 API ==========
+  {
+    id: 'icp-api',
+    label: '备案查询 API',
+    iconSVG: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+    description: 'ICP 备案核验改为按域名调用官方备案库 API（uapis.cn / apihz.cn），页面文本扫描降级为兜底。',
+    mode: 'basic',
+    groups: [
+      {
+        id: 'icp-api-main',
+        label: 'API 核验开关',
+        iconSVG: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+        mode: 'basic',
+        settings: [
+          {
+            key: 'icpApiEnabled', type: 'boolean', label: '启用备案 API 核验',
+            desc: '关闭后仅用页面文本扫描备案号（旧逻辑，误报率更高）。建议保持开启。',
+            mode: 'basic'
+          },
+          {
+            key: 'icpApiProviderUapis', type: 'boolean', label: '数据源：uapis.cn',
+            desc: '稳定免密钥的备案查询源，作为主数据源。',
+            mode: 'basic'
+          },
+          {
+            key: 'icpApiProviderApihz', type: 'boolean', label: '数据源：apihz.cn',
+            desc: '公开备案查询接口（约 10 次/分钟限流），作为备援数据源。',
+            mode: 'basic'
+          }
+        ]
+      },
+      {
+        id: 'icp-api-apihz',
+        label: 'apihz.cn 自定义凭据',
+        iconSVG: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+        mode: 'advanced',
+        settings: [
+          {
+            key: 'icpApiApihzId', type: 'text', label: 'apihz 接口 ID',
+            desc: '填写自有 apihz.cn 账号的 id 可绕过公共 10 次/分钟限流；留空使用内置公开凭据。',
+            mode: 'advanced', placeholder: '留空 = 使用内置公开凭据'
+          },
+          {
+            key: 'icpApiApihzKey', type: 'text', label: 'apihz 接口 Key',
+            desc: '与上方 ID 配套的 key（在 apihz.cn 申请）。留空使用内置公开凭据。',
+            mode: 'advanced', placeholder: '留空 = 使用内置公开凭据'
+          }
+        ]
+      }
+    ]
+  },
+
+  // ========== 4. 链接分析 ==========
   {
     id: 'links',
     label: '链接分析',
@@ -328,15 +439,17 @@ export const SECTIONS = [
           { key: 'link_samePageThreshold', type: 'number', label: '同页链接阈值', desc: '≥此数量触发同页链接检测', min: 2, max: 50, step: 1, mode: 'advanced' },
           { key: 'link_duplicateThreshold', type: 'number', label: '重复链接阈值', desc: '≥此数量触发重复链接检测', min: 2, max: 20, step: 1, mode: 'advanced' },
           { key: 'link_deadLinkThreshold', type: 'number', label: '死链阈值', desc: '≥此数量触发死链检测', min: 0, max: 20, step: 1, mode: 'advanced' },
-          { key: 'checkDeadLinks', type: 'boolean', label: '死链主动检测',
+          {
+            key: 'checkDeadLinks', type: 'boolean', label: '死链主动检测',
             desc: '发送 HEAD 请求验证死链（关闭后仅统计不验证，不影响计分）',
-            mode: 'advanced' }
+            mode: 'advanced'
+          }
         ]
       }
     ]
   },
 
-  // ========== 6. 代码工程化 ==========
+  // ========== 5. 代码工程化 ==========
   {
     id: 'code',
     label: '代码工程',
@@ -366,6 +479,7 @@ export const SECTIONS = [
           { key: 'emoji_densityMaxScore', type: 'number', label: 'Emoji 得分上限', desc: 'Emoji 密度检测单次最大加分', min: 0, max: 100, step: 5, mode: 'advanced' },
           { key: 'emoji_densityThresholdLow', type: 'number', label: '密度下阈值(个/千字)', desc: '低于此值不加分', min: 0, max: 20, step: 0.5, mode: 'advanced' },
           { key: 'emoji_densityThresholdHigh', type: 'number', label: '密度上阈值(个/千字)', desc: '高于此值得满分', min: 0, max: 50, step: 0.5, mode: 'advanced' },
+          { key: 'downloadDensityThreshold', type: 'number', label: '下载意图密度阈值(个/千字)', desc: '页面下载关键词密度高于此值时触发完整检测', min: 0, max: 20, step: 0.5, mode: 'advanced' },
           { key: 'emoji_keywordMatchThreshold', type: 'number', label: '关键词匹配阈值', desc: '推广关键词匹配≥此值才进入Emoji检测', min: 0, max: 10, step: 1, mode: 'advanced' },
           { key: 'emoji_minTextLength', type: 'number', label: '最小文本长度', desc: '页面文本少于此值跳过Emoji检测', min: 0, max: 1000, step: 10, mode: 'advanced' }
         ]
@@ -373,7 +487,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 7. 域名年龄 ==========
+  // ========== 6. 域名年龄 ==========
   {
     id: 'domain-age',
     label: '域名年龄',
@@ -407,7 +521,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 8. 缓存与性能 ==========
+  // ========== 7. 缓存与性能 ==========
   {
     id: 'cache',
     label: '缓存与性能',
@@ -456,7 +570,7 @@ export const SECTIONS = [
     ]
   },
 
-  // ========== 9. 隐私与数据 ==========
+  // ========== 8. 隐私与数据 ==========
   {
     id: 'privacy',
     label: '隐私与数据',
@@ -503,6 +617,17 @@ export const SECTIONS = [
     ]
   },
 
+  // ========== 9. 站点黑名单 ==========
+  {
+    id: 'site-blacklist',
+    label: '站点黑名单',
+    iconSVG: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    description: '管理已知的恶意网站域名。黑名单中的网站将被直接标记为高风险并触发警告。每行一个域名。',
+    mode: 'basic',
+    type: 'custom',
+    renderFn: '_renderSiteBlacklistSection'
+  },
+
   // ========== 10. 白名单 ==========
   {
     id: 'whitelist',
@@ -514,7 +639,7 @@ export const SECTIONS = [
     renderFn: '_renderWhitelistSection'
   },
 
-  // ========== 12. 关于 ==========
+  // ========== 11. 关于 ==========
   {
     id: 'about',
     label: '关于',
@@ -728,13 +853,15 @@ export function validateSetting(key, value) {
       return num;
     }
     case 'string':
-      // select 类型：验证是否在 options 中
-      if (def === 'medium' || def === 'dark' || def === 'custom') {
+      // 主题值校验：仅允许 THEME_VALUES 枚举
+      if (key === 'theme') {
+        return THEME_VALUES.includes(value) ? value : def;
+      }
+      // select 类型：验证值必须在 options 枚举内
+      {
         const setting = findSettingMeta(key);
-        if (setting && setting.options) {
-          const validValues = setting.options.map(o => o.value);
-          if (validValues.includes(value)) return value;
-          return def;
+        if (setting && Array.isArray(setting.options) && setting.options.length > 0) {
+          return setting.options.some(o => o.value === value) ? value : def;
         }
       }
       return String(value);
@@ -755,4 +882,55 @@ function findSettingMeta(key) {
     }
   }
   return null;
+}
+
+// ==================== 设置迁移 ====================
+
+/**
+ * 设置迁移 v1 → v2 → v3（幂等）。
+ * v2 修正 apihz 凭据键名拼写：icpApiApiahzId/Key → icpApiApihzId/Key；
+ * v3 将桌面通知/警告弹窗两个开关合并为 alertMode 单选并删除旧键。
+ *
+ * 存储中 _schemaVersion >= SCHEMA_VERSION 时原样返回；
+ * 未写 _schemaVersion 的旧数据视为 v1。
+ * 调用方（service-worker.js loadGlobalSettings / options.js _loadSettings）
+ * 应在读设置后调用，若返回对象与存储不同则写回。
+ *
+ * @param {Object|undefined} stored - chrome.storage 中读出的设置对象
+ * @returns {Object} 迁移后的设置对象（未变时返回原引用）
+ */
+export function migrateSettings(stored) {
+  if (!stored || typeof stored !== 'object') return stored || {};
+  let v = stored._schemaVersion;
+  if (v === undefined) v = 1; // 旧数据未写 _schemaVersion，视为 v1
+  if (v >= SCHEMA_VERSION) return stored;
+
+  const out = { ...stored };
+  if (v < 2) {
+    // 旧键 → 新键（新键已有值时保留新键），随后删除旧键
+    if (out.icpApiApiahzId !== undefined) {
+      if (out.icpApiApihzId === undefined) out.icpApiApihzId = out.icpApiApiahzId;
+      delete out.icpApiApiahzId;
+    }
+    if (out.icpApiApiahzKey !== undefined) {
+      if (out.icpApiApihzKey === undefined) out.icpApiApihzKey = out.icpApiApiahzKey;
+      delete out.icpApiApiahzKey;
+    }
+    v = 2;
+  }
+  if (v < 3) {
+    // 旧开关 → alertMode：都关→none；仅通知开→notification；其余（弹窗开）→popup
+    if (out.alertMode === undefined) {
+      const notifOn = out.desktopNotifications !== false;
+      const popupOn = out.showWarningWindow !== false;
+      if (!notifOn && !popupOn) out.alertMode = 'none';
+      else if (!popupOn) out.alertMode = 'notification';
+      else out.alertMode = 'popup';
+    }
+    delete out.desktopNotifications;
+    delete out.showWarningWindow;
+    v = 3;
+  }
+  out._schemaVersion = v;
+  return out;
 }

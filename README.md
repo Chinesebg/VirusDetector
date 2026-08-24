@@ -3,21 +3,21 @@
 > Chrome/Edge 浏览器扩展，实时检测银狐木马（Silver Fox Trojan）钓鱼与仿冒网站。
 
 [![Manifest](https://img.shields.io/badge/Manifest-V3-blue)](https://developer.chrome.com/docs/extensions/mv3/)
-[![Version](https://img.shields.io/badge/Version-2.5.0-orange)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-3.0.0--alpha.1-orange)](https://github.com)
 
 ---
 
 ## 功能简介
 
-通过 8 项检测与下载域名黑名单加成对访问的网站进行实时安全评估。当总分达到 100 分阈值时，自动触发红色警告、桌面通知、下载拦截和警告弹窗。
+通过 8 项检测与下载域名黑名单加成对访问的网站进行实时安全评估。当总分达到 100 分阈值时，自动触发红色警告与下载拦截，并按设置弹出警告弹窗或发送桌面通知（拦截方式可选「下载注入+顶部横幅」或「全屏覆盖全面拦截」）。
 
 | 规则 | 最高加分 | 检测内容 |
 | ---- | -------- | -------- |
-| 域名仿冒 | **60** | 4 类匹配策略 + 去连字符二次检测（精确段匹配、子串包含、关键词堆叠、约束编辑距离） |
+| 域名仿冒 | **60** | 分级嫌疑（STRONG/WEAK）+ 多特征联动评分（形近混淆、拼音变体、typosquat、title 声称、ICP、域名年龄） |
 | 压缩包下载 | **40** | 两阶段检测：Phase A 主动扫描页面跨域压缩包链接（上限 30 分）+ Phase B 实际下载拦截（上限 40 分） |
-| ICP 备案缺失 | **50** | 对所有网站检测 ICP 备案号（含 beian.gov.cn 等政府链接提取） |
+| ICP 备案缺失 | **50** | 对所有网站检测 ICP 备案号（含 beian.gov.cn 等政府链接提取）；无备案分支按可信档案联动降权（老域名/未声称品牌/开源可信信号可降至 10） |
 | 链接分析 | **70** | Part A（同页链接/死链/重复链接）+ Part B（下载按钮/压缩包链接） |
-| 代码工程化 | **60** | 结构信号组合判定（DOM复杂度+框架检测+外部资源+异常JS引用），2信号+20，≥3信号+30；推广页Emoji密度检测最高+30 |
+| 代码工程化 | **60** | 结构信号组合判定（DOM复杂度+框架检测+外部资源+异常JS引用），2信号+20，≥3信号+30；可信档案下减半，AI 可信特征（meta generator+可信外链）归零；推广页Emoji密度检测最高+20 |
 | 域名年龄评分 | **60** | 基于 RDAP 协议（RFC 9083）的 S 型衰减函数计分，新注册域名更可疑 |
 | 域名年龄减分 | **-20** | 注册时间长的域名可抵消部分可疑分数（条件：当前分数 ≥ 20） |
 | 下载链接跨域 | **30** | 跨域下载 +10，下载域名命中黑名单 +20，新注册域名额外 +10 |
@@ -33,6 +33,7 @@
 - **下载拦截注入** — ≥100 分时注入页面级拦截：精准匹配已知压缩包链接 + 视觉禁用下载按钮 + MutationObserver 动态监控
 - **下载域名黑名单** — 用户拦截的下载域名跨站免疫，90 天自动清理，500 条容量上限
 - **非压缩包检测开关** — 预留设置页接入，可控制是否拦截 `.exe` `.msi` 等可执行文件（默认关闭）
+- **更新检测** — 经 Cloudflare Worker 代理查询 GitHub Releases（边缘缓存 + ETag 条件请求，规避 GitHub API 按来源 IP 的速率限制），GitHub API 直连作为回退源；商店渠道安装自动关闭检查，由浏览器商店自动更新
 - **阈值分层** — ≥80 分激活下载确认弹窗，≥100 分激活完整防护（注入拦截 + 警告窗口 + 图标变红）
 - **警告弹窗** — 独立窗口展示风险详情，支持一键跳转官方网站并关闭危险页面
 
@@ -63,30 +64,33 @@
 ```text
 VirusDetector/
 ├── manifest.json                      # Manifest V3 扩展清单
+├── package.json                       # 开发工具链配置
 ├── README.md
+├── eslint.config.mjs                  # ESLint 平面配置
 ├── icons/                             # 盾牌图标（16/32/48/128 px）
 ├── background/
 │   ├── service-worker.js              # 主协调器 —— 导航监听、下载拦截、消息路由、弹窗调度
 │   ├── scoring-engine.js              # 多规则评分引擎 —— 综合评估与风险定级
-│   ├── domain-database.js             # 119 品牌域名数据库 + 仿冒检测 + 去连字符二次检测
+│   ├── domain-database.js             # 120 品牌域名数据库 + 仿冒检测 + 去连字符二次检测
 │   ├── download-blacklist.js          # 下载域名黑名单 —— 跨站免疫、90 天自动清理
+│   ├── site-blacklist.js              # 站点黑名单 —— 用户手动标记恶意站点
 │   ├── rdap-client.js                 # RDAP 注册信息查询客户端
 │   ├── whois-client.js                # 统一域名查询入口（RDAP 主 + WhoisCX 回退）
-│   ├── cache-manager.js               # chrome.storage.local 缓存管理（24h TTL）
-│   ├── similarity.js                  # 预留文本相似度工具（当前未接入评分链路）
+│   ├── icp-api.js                     # ICP 备案 API 客户端（多源备援）
 │   ├── icp-utils.js                   # ICP 备案号正则匹配（覆盖 34 个省级行政区简称）
+│   ├── cache-manager.js               # chrome.storage.local 缓存管理（24h TTL）
 │   └── resource-resolver/
 │       ├── index.js                   # Resource Resolver 主调度器 —— BFS 资源树遍历
-│       ├── config.js                  # 解析器配置常量（深度/数量/超时/大小限制）
+│       ├── config.js                  # 解析器配置常量
 │       ├── resource-graph.js          # ResourceGraph / ResourceNode 数据结构
 │       └── resolvers/
 │           ├── base-resolver.js       # 解析器基类（可插拔接口）
 │           ├── html-resolver.js       # HTML 源码 URL 提取（11 种标签）
-│           ├── script-resolver.js     # Inline Script 静态分析（location/fetch/URL 模式）
+│           ├── script-resolver.js     # Inline Script 静态分析
 │           ├── meta-resolver.js       # Meta Refresh 跳转解析
-│           ├── txt-resolver.js        # TXT 内容递归解析（TXT→TXT→ZIP 链）
+│           ├── txt-resolver.js        # TXT 内容递归解析
 │           ├── redirect-resolver.js   # HTTP 30x 重定向跟随
-│           ├── json-resolver.js       # JSON 内容 ZIP URL 提取
+│           ├── json-resolver.js       # JSON 内容 URL 提取
 │           ├── iframe-resolver.js     # iframe src 解析
 │           └── external-script-resolver.js  # 外部 JS 解析（预留，默认关闭）
 ├── content/
@@ -95,19 +99,36 @@ VirusDetector/
 ├── popup/
 │   ├── popup.html                     # 工具栏弹窗 UI
 │   ├── popup.css                      # 弹窗样式（深色主题、SVG 图标系统）
-│   └── popup.js                       # 弹窗控制逻辑 —— 状态渲染、白名单操作
+│   ├── popup.js                       # 弹窗控制逻辑
+│   └── theme-init.js                  # 同步主题初始化（防闪烁）
+├── options/
+│   ├── options.html                   # 设置页面 UI
+│   ├── options.css                    # 设置页面样式
+│   ├── options.js                     # 设置页面控制器
+│   ├── theme-init.js                  # 同步主题初始化
+│   └── body-sync.js                   # DOM 状态同步
 ├── warning/
 │   ├── warning.html                   # 独立警告窗口 UI
 │   ├── warning.css                    # 警告窗口样式
-│   ├── warning.js                     # 警告窗口控制 —— 关闭危险页面、跳转安全页面
+│   ├── warning.js                     # 警告窗口控制
 │   ├── download-confirm.html          # 下载二次确认窗口 UI
 │   ├── download-confirm.css           # 下载确认窗口样式
-│   └── download-confirm.js            # 下载确认控制 —— 三选项用户决策
-└── utils/
-    ├── constants.js                   # 评分常量、阈值配置、黑名单参数
-    ├── url-utils.js                   # 域名解析、PSL 主域提取、DoH DNS 查询
-    ├── messaging.js                   # chrome.runtime 消息通信封装
-    └── trusted-platforms.js          # 可信平台白名单 —— UGC 平台跳过仿冒检测
+│   └── download-confirm.js            # 下载确认控制
+├── utils/
+│   ├── constants.js                   # 全局常量唯一真源（评分阈值、扩展名并集、消息/存储键、超时、URL）
+│   ├── content-constants.js           # 经典脚本常量镜像（content_scripts/首帧同步脚本经 window.VT_CONSTANTS 读取）
+│   ├── settings-schema.js             # 设置系统单一事实来源（默认值由 constants.js 派生）
+│   ├── url-utils.js                   # 域名解析、PSL 主域提取
+│   ├── trusted-platforms.js           # 可信 UGC 平台白名单
+│   ├── trusted-download-hosts.js      # 可信下载平台白名单
+│   └── exemptions/
+│       └── index.js                   # ICP 豁免 + 可信平台统一管理
+├── worker/
+│   ├── report-issue.js                # Cloudflare Worker（上报代理 + 版本检查）
+│   └── wrangler.toml                  # Wrangler 配置
+└── tests/
+    ├── domain-database.test.mjs       # 域名数据库单元测试
+    └── extension-safety.test.mjs      # 扩展安全性集成测试
 ```
 
 ### 技术特点
@@ -125,19 +146,40 @@ VirusDetector/
 
 ### 防御策略
 
-#### 1. 域名仿冒检测（规则一 | 60 分）
+#### 1. 域名仿冒检测（规则一 | 封顶 60 分）
 
-采用 4 类匹配策略，并对含 `-` / `_` 的域名执行去连字符二次检测；任一策略命中即判定为仿冒：
+采用**分级嫌疑 + 多特征联动评分**，取代原「任一策略命中即 +60」的硬处理：
 
 ```text
-规则 A   精确段匹配     → deepseek-go.com 拆分为 [deepseek, go, com] → "deepseek" 精确命中
-规则 B   标签子串包含   → pc-huorong.com.cn 的标签包含 "huorong" → 命中（关键词 ≥ 5 字符）
-规则 C   关键词堆叠     → google-google-cn-google.hl.cn → "google" 在段中出现 ≥ 3 次
-规则 D   约束编辑距离   → firefpx.com 与 "firefox" 距离 ≤ 2 且长度差 ≤ 2 → 命中
-二次检测 去连字符重试   → team-viewer.us 去除连字符后按 A/B/C 重试
+STRONG（高置信嫌疑，基础 45 分）
+  S1 强关键词精确段匹配  → deepseek-login.com 段 "deepseek" 精确命中（kw ≥ 6）
+  S2 官方注册域标签段    → qianwenai-x.com 段 "qianwenai" 等于官方注册域标签
+  S3 形近字符混淆        → a1ipay.com / ta0bao.com / rnicrosoft.com（0↔o、1↔l↔i、rn↔m 等）
+  S4 关键词堆叠          → google-google-cn-google.hl.cn（同一关键词 ≥ 3 次）
+  S5 约束编辑距离        → deeрseek.com 等 typosquat（距离 ≤ 2，护栏：公共前后缀 ≥ 4）
+  S6 拼音关键词精确段    → tengxun-soft.com 命中腾讯全拼 "tengxun"
+WEAK（低置信嫌疑，基础 10 分）
+  W1 弱关键词精确段匹配  → sogou.evil.com 段 "sogou"（kw 4-5）
+  W2 标签子串包含        → pc-huorong.com.cn 包含 "huorong"（排除通用词碰撞）
+短关键词（≤ 3：qq / jd / rar ...）不参与段匹配，仅整域相等时 WEAK
+去连字符二次检测          → 含 - / _ 的域名去除后重跑上述规则
 ```
 
-域名数据库覆盖 **119 个**品牌，包含 19 个实际使用类别：安全软件、浏览器、即时通讯、输入法、办公、视频、音乐、云存储、AI Chat、下载工具、压缩工具、电商、地图出行、支付、开发者工具、系统工具、游戏平台、游戏加速器、新闻资讯。
+**多特征联动评分**（封顶 60，下限 0）—— 仅域名相似远不足以触发警告：
+
+| 联动特征 | 分值 |
+| ------- | ---- |
+| 页面 title 声称被仿冒品牌 | +20 |
+| 未检测到有效 ICP 备案 | +10 |
+| 域名注册 < 90 天 | +10 |
+| 存在指向非官方域的下载链接 | +10 |
+| ICP 备案核验通过 | -15 |
+| 域名注册 > 730 天 | -10 |
+| WEAK 且页面未声称任何品牌 | 减半（+5） |
+
+设计目标：`tongyi.com` 等「域名撞品牌词但页面未自称该品牌、有自身备案」的合法站降至 ~30 分不再误报；真实钓鱼站（域名仿冒 + 页面自称官方 + 无备案 + 诱导下载）可达 60 分并与其他规则聚合触发警告。规则三的「盗用备案号」判定要求「域名嫌疑 + title 声称品牌」双重条件，避免误伤。
+
+域名数据库覆盖 **120 个**品牌，包含 19 个实际使用类别：安全软件、浏览器、即时通讯、输入法、办公、视频、音乐、云存储、AI Chat、下载工具、压缩工具、电商、地图出行、支付、开发者工具、系统工具、游戏平台、游戏加速器、新闻资讯。
 
 #### 2. 压缩包下载检测（规则二 | 最高 40 分）
 
@@ -201,13 +243,23 @@ Content Script 扫描页面上所有 `<a>` 标签，识别指向压缩包文件�
 - 同时识别公安备案号：`{省份}公网安备{10+位数字}号`
 - Content Script 通过 6 层扫描获取页面中所有可能包含备案号的文本：footer 元素、ICP/beian 命名元素、底部 30% 区域、所有 `<a>` 链接（含 beian.gov.cn / beian.miit.gov.cn 等政府备案链接）、position:fixed 底部固定栏、TreeWalker 全文本节点遍历（上限 15000 节点）
 
+**无备案分支联动降权**（保持 50 上限，下限 10）：无备案本身是弱信号——个人开源工具站、新上线的合法站点大量无备案。降权因子（可叠加，降权原因在警告详情可见）：
+
+| 降权因子 | 分值 | 说明 |
+| ------- | ---- | ---- |
+| 老域名 | -20 | 注册 > 730 天，运营已久的站点 |
+| title 未声称任何品牌 | -10 | 页面不冒充任何品牌 |
+| 可信信号 | -10 | 页面链接指向开源/文档平台（GitHub/Gitee 等），或 meta generator 标记 AI 生成 |
+
+「无备案 + 新域名 + 声称品牌 + 无可信信号」的钓鱼组合保持满分 50。`impersonating`（盗用备案号 +50）分支不受降权影响。
+
 #### 4. 链接分析（规则四 | 最高 70 分）
 
 Part A（先执行，可叠加）：
 
 | 子规则 | 触发条件 | 加分 |
 | ------ | -------- | ---- |
-| A-1 同页链接 | >= 5 个链接指向当前页（完整 URL 完全一致） | +20 |
+| A-1 同页链接 | >= 8 个链接指向当前页（完整 URL 完全一致） | +20 |
 | A-2 死链 | >= 1 个指向不存在子页面的链接（HEAD 请求验证；自动二次扫描跳过） | +20 |
 | A-3 重复链接 | >= 4 个不同元素指向同一个链接 | +20 |
 | A-3 附加 | 该重复链接为下载链接（含 download/down 等关键词） | +10 |
@@ -234,7 +286,9 @@ Part B（仅当 Part A 为 0 时执行）：
 
 组合判定：≥3 个结构信号 = +30（高度可疑），2 个结构信号 = +20（中度可疑），0-1 = 0。
 
-##### 子规则 B：关键词预筛选 + Emoji 密度检测（最高 +30 分）
+**可信档案联动降权**：AI 生成的合法工具站/静态文档站天然命中「无框架+DOM简单+资源少」信号。当页面满足「无域名嫌疑 + 老域名(>730天) + 备案通过/中性 + 未声称任何品牌」时，结构信号分**减半**；若再叠加 AI 可信特征（meta generator 存在 + 页面链接指向可信外链），则**归零**。域名有仿冒嫌疑或页面声称品牌 → 不降权（保持原分）。
+
+##### 子规则 B：关键词预筛选 + Emoji 密度检测（最高 +20 分）
 
 先通过推广/产品关键词（"下载""产品""软件""download""product""software"等 49 个中英文关键词）预筛选确认页面是否为推广性质，再计算 Emoji 密度并通过分段线性映射加分：
 
@@ -258,8 +312,8 @@ Part B（仅当 Part A 为 0 时执行）：
 score = floor(60 / (1 + (x / (60 × b))^a))
 
 其中 x = creation_days（域名已注册天数）
-     a = 衰减速率参数（默认 2，越大衰减越快）
-     b = 衰减零点参数（默认 1，控制衰减中心位置）
+     a = 衰减速率参数（默认 2.2，越大衰减越快）
+     b = 衰减零点参数（默认 1.9，控制衰减中心位置）
 ```
 
 新注册域名（x → 0）：分母 → 1，score → 60（最高可疑）。随注册天数增加，分数逐渐衰减至 0。
@@ -270,8 +324,8 @@ score = floor(60 / (1 + (x / (60 × b))^a))
 
 | 注册天数 x | 减分分值 |
 | ---------- | -------- |
-| x < 180 | 0（新域名不减分） |
-| 180 ≤ x < 730 | floor(20 × (x - 180) / 550) |
+| x < 365 | 0（新域名不减分） |
+| 365 ≤ x < 730 | floor(20 × (x - 365) / 365) |
 | x ≥ 730 | 20（最大减分） |
 
 **执行条件**：仅当当前可疑总分 ≥ 20 时才应用（避免对低分网站的过度减分）。
@@ -352,10 +406,10 @@ Timeline:  document_start       page load        content script reports      use
 | **L2** | injectBlockerFunc | 评分 ≥50 注入 lightweight，≥80 注入完整版 | Hook `a.click()` + `document.createElement`，拦截页面级下载点击；≥80 增加视觉禁用 + MutationObserver |
 | **L3** | chrome.downloads.onCreated | 浏览器下载事件触发时 | 取消下载 + 弹窗确认（IDM 接管时此层失效，由 L0/L2 兜底） |
 
-**分层注入阈值**：
-- 评分 ≥50 → 注入 lightweight 拦截器（仅 JS hooks + click 拦截，无视觉禁用）
-- 评分 ≥80 → 注入完整拦截器（视觉禁用下载按钮 + MutationObserver + 下载确认弹窗）
-- 评分 ≥100 → 完整拦截器 + 红色警告弹窗 + 桌面通知 + 红色图标
+**注入策略**：
+- 评分 ≥100 → 注入完整页面拦截器（JS hooks + click 拦截 + 视觉禁用下载按钮 + MutationObserver + 红色警告横幅）+ 桌面通知 + 红色图标
+- 评分 ≥80 → 下载确认弹窗激活（取消下载 + 三选项确认，不注入页面拦截）
+- 评分 < 80 → 不干预（绿色图标显示分数）
 
 ### 评分体系
 
@@ -388,12 +442,22 @@ Timeline:  document_start       page load        content script reports      use
 - 工具栏图标右下角显示蓝色对勾徽章
 - 弹窗显示绿色对勾 + 提示文字
 - 支持一键移出白名单并立即重新触发检测
+- **支持域名通配符**（在设置页「白名单」中编辑）：
+  - `example.com` —— 仅精确匹配该域名
+  - `*.example.com` —— 匹配 `example.com` 及其**所有子域名**（任意层级，如 `www.example.com`、`a.b.example.com`）
+  - `*` —— 匹配所有域名（完全跳过检测，**请谨慎使用**）
+  - 条目不区分大小写，自动忽略误粘贴的协议 / 路径 / 端口；例如输入 `https://*.Example.com/path` 会被规范化为 `*.example.com`
 
 #### 缓存策略
 
-- 检测结果缓存于 `chrome.storage.local`，TTL = 24 小时
+- 检测结果缓存于 `chrome.storage.local`，TTL = 24 小时（设置页可调）
 - Content Script 发回新数据时自动绕过缓存更新
 - 清除白名单时同步清除对应域名的缓存
+- **配额治理**（storage.local 上限 10MB，配额耗尽会导致检测失效）：
+  - 官方/可信/完全信任域名（`DomainDatabase` / `TrustedPlatforms` / `.gov.cn` 等）不读写缓存
+  - 周期清理：每 6 小时 alarm 自动扫描，删除过期条目 + 按 `lastAccess` LRU 保留最近 100 条
+  - 配额紧急保护：写入遇 `QuotaExceeded` 时自动清理（过期 + 最旧条目）后重试，检测结果不丢失
+- 标签页状态（`tab_state_*`）存于 `chrome.storage.session`（内存，不占 local 配额，浏览器会话结束自动清空），标签页关闭/替换时同步清理
 
 #### 弹窗去重
 
@@ -428,7 +492,7 @@ Timeline:  document_start       page load        content script reports      use
 | `storage` | 持久化评分状态、白名单、缓存 |
 | `downloads` | 监听下载事件、取消危险下载 |
 | `scripting` | 注入 Content Script 与下载拦截脚本 |
-| `alarms` | Manifest 中保留的定时任务权限；当前代码未调用 `chrome.alarms` |
+| `alarms` | 定时触发更新检查（`chrome.alarms.create` + `onAlarm` 监听器） |
 | `notifications` | 桌面风险通知 |
 | `webNavigation` | 监听页面导航以触发分析 |
 | `http://*/*`, `https://*/*` | 仅覆盖 HTTP/HTTPS 网站，避免在 `file://`、`data:`、`ftp:`、浏览器内部页面等非网页协议上运行 |
